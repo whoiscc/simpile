@@ -1,7 +1,6 @@
 pub mod linked;
 
 use std::{
-    mem::align_of,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
     ptr::null_mut,
@@ -111,15 +110,17 @@ impl Drop for Mmap {
     }
 }
 
-#[repr(align(4096))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
-struct Unit(u8);
-pub struct Fixed(Box<[Unit]>);
+pub struct Fixed(Box<[u8]>);
 
-impl Fixed {
-    pub fn new(len: usize) -> Self {
-        let data = vec![Unit(0); len / align_of::<Unit>()].into_boxed_slice();
-        Self(data)
+impl From<Box<[u8]>> for Fixed {
+    fn from(value: Box<[u8]>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Fixed> for Box<[u8]> {
+    fn from(value: Fixed) -> Self {
+        value.0
     }
 }
 
@@ -127,26 +128,26 @@ impl Deref for Fixed {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { slice::from_raw_parts(self.0.as_ptr() as _, self.0.len() * align_of::<Unit>()) }
+        &self.0
     }
 }
 
 impl DerefMut for Fixed {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe {
-            slice::from_raw_parts_mut(self.0.as_mut_ptr() as _, self.0.len() * align_of::<Unit>())
-        }
+        &mut self.0
     }
 }
 
 impl Space for Fixed {
     fn set_size(&mut self, bytes: usize) -> bool {
-        bytes == self.0.len() * align_of::<Unit>()
+        bytes == self.0.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::mem::transmute;
+
     use super::*;
 
     #[test]
@@ -160,7 +161,7 @@ mod tests {
             assert_eq!(&space[..source.len()], source);
         }
         run(&mut Mmap::new());
-        run(&mut Fixed::new(1 << 12));
+        run(&mut Fixed::from(vec![0; 1 << 12].into_boxed_slice()));
     }
 
     #[test]
@@ -170,6 +171,12 @@ mod tests {
             assert_eq!((space.as_ptr() as usize) % (1 << 12), 0);
         }
         run(&mut Mmap::new());
-        run(&mut Fixed::new(1 << 12));
+        #[derive(Clone)]
+        #[repr(align(4096))]
+        struct Page(u8);
+        let data = unsafe { transmute::<_, Box<[u8]>>(vec![Page(0); 1].into_boxed_slice()) };
+        let mut space = Fixed::from(data);
+        run(&mut space);
+        drop(Box::<[u8]>::from(space));
     }
 }
