@@ -1,4 +1,7 @@
+pub mod linked;
+
 use std::{
+    mem::align_of,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
     ptr::null_mut,
@@ -102,16 +105,21 @@ impl Mmap {
 
 impl Drop for Mmap {
     fn drop(&mut self) {
-        self.clear()
+        if self.len != 0 {
+            self.clear()
+        }
     }
 }
 
-#[derive(Default)]
-pub struct Fixed(Vec<u8>);
+#[repr(align(4096))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+struct Unit(u8);
+pub struct Fixed(Box<[Unit]>);
 
-impl From<Vec<u8>> for Fixed {
-    fn from(value: Vec<u8>) -> Self {
-        Self(value)
+impl Fixed {
+    pub fn new(len: usize) -> Self {
+        let data = vec![Unit(0); len / align_of::<Unit>()].into_boxed_slice();
+        Self(data)
     }
 }
 
@@ -119,19 +127,21 @@ impl Deref for Fixed {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        unsafe { slice::from_raw_parts(self.0.as_ptr() as _, self.0.len() * align_of::<Unit>()) }
     }
 }
 
 impl DerefMut for Fixed {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        unsafe {
+            slice::from_raw_parts_mut(self.0.as_mut_ptr() as _, self.0.len() * align_of::<Unit>())
+        }
     }
 }
 
 impl Space for Fixed {
     fn set_size(&mut self, bytes: usize) -> bool {
-        bytes == self.0.len()
+        bytes == self.0.len() * align_of::<Unit>()
     }
 }
 
@@ -150,6 +160,16 @@ mod tests {
             assert_eq!(&space[..source.len()], source);
         }
         run(&mut Mmap::new());
-        run(&mut Fixed::from(vec![0; 1 << 12]));
+        run(&mut Fixed::new(1 << 12));
+    }
+
+    #[test]
+    fn aligned_data() {
+        fn run<S: Space>(space: &mut S) {
+            space.set_size(1 << 12);
+            assert_eq!((space.as_ptr() as usize) % (1 << 12), 0);
+        }
+        run(&mut Mmap::new());
+        run(&mut Fixed::new(1 << 12));
     }
 }
