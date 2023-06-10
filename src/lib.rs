@@ -1,3 +1,5 @@
+#![warn(unsafe_op_in_unsafe_fn)]
+
 pub mod linked;
 
 use std::{
@@ -146,7 +148,7 @@ impl Space for Fixed {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::transmute;
+    use std::alloc::{alloc, dealloc, Layout};
 
     use super::*;
 
@@ -171,12 +173,16 @@ mod tests {
             assert_eq!((space.as_ptr() as usize) % (1 << 12), 0);
         }
         run(&mut Mmap::new());
-        #[derive(Clone)]
-        #[repr(align(4096))]
-        struct Page(u8);
-        let data = unsafe { transmute::<_, Box<[u8]>>(vec![Page(0); 1].into_boxed_slice()) };
-        let mut space = Fixed::from(data);
+        let layout = Layout::from_size_align(1 << 12, 1 << 12).unwrap();
+        let mut space = Fixed::from(unsafe {
+            Box::<[_]>::from_raw(slice::from_raw_parts_mut(alloc(layout), 1 << 12))
+        });
         run(&mut space);
-        drop(Box::<[u8]>::from(space));
+        unsafe {
+            dealloc(
+                Box::leak(Box::<[u8]>::from(space)).first_mut().unwrap(),
+                layout,
+            )
+        }
     }
 }
