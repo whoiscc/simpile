@@ -1,6 +1,7 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
     ptr::{copy_nonoverlapping, null_mut, NonNull},
+    sync::Mutex,
 };
 
 use crate::Space;
@@ -465,7 +466,7 @@ impl Overlay {
     }
 }
 
-pub struct Allocator<S>(S);
+pub struct Allocator<S>(Mutex<S>);
 
 impl<S> Allocator<S> {
     pub fn new(mut space: S) -> Self
@@ -473,15 +474,38 @@ impl<S> Allocator<S> {
         S: Space,
     {
         unsafe { Overlay(space.first_mut().unwrap().into()).init(space.len()) };
-        Self(space)
+        Self(Mutex::new(space))
     }
 }
 
-// impl<S> GlobalAlloc for Allocator<S>
-// where
-//     S: Space,
-// {
-//     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-//         Overlay::alloc_in_space(self.0, layout)
-//     }
-// }
+unsafe impl<S> GlobalAlloc for Allocator<S>
+where
+    S: Space,
+{
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let mut space = loop {
+            if let Ok(space) = self.0.try_lock() {
+                break space;
+            }
+        };
+        unsafe { Overlay::alloc_in_space(&mut *space, layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        let mut space = loop {
+            if let Ok(space) = self.0.try_lock() {
+                break space;
+            }
+        };
+        unsafe { Overlay::dealloc_in_space(&mut *space, ptr) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let mut space = loop {
+            if let Ok(space) = self.0.try_lock() {
+                break space;
+            }
+        };
+        unsafe { Overlay::realloc_in_space(&mut *space, ptr, layout, new_size) }
+    }
+}
