@@ -112,20 +112,17 @@ impl Chunk {
         let Some(user_data) = (unsafe { self.get_user_data(layout) }) else {
             return (None, None);
         };
+        // println!("{user_data:?}");
 
-        let padding = unsafe { user_data.as_ptr().offset(-8) };
-        let padding_size = unsafe { padding.offset_from(self.0.as_ptr()) };
+        let padding_size = unsafe { user_data.as_ptr().offset(-8).offset_from(self.0.as_ptr()) };
         debug_assert!(padding_size >= 0);
-        if padding_size != 0 {
-            // which also clear meta bits
-            debug_assert_eq!(padding_size as u64 & Self::META_MASK, 0);
-            unsafe { *padding.cast::<u64>() = padding_size as _ }
-        }
-
+        // the padding indicator will only be writen after chain updated, or pointers may get
+        // corrupted by this
         let mut new_size = usize::max(padding_size as usize + layout.size(), Self::MIN_SIZE);
         if new_size % 8 != 0 {
             new_size += 8 - new_size % 8;
         }
+        // println!("new size {new_size}");
         let remain_size;
         unsafe {
             debug_assert!(self.get_size() >= new_size);
@@ -293,6 +290,7 @@ impl Overlay {
         unsafe {
             new_top.set_next(None);
             new_top.set_prev(top.get_prev());
+            // println!("update prev {:?}", top.get_prev());
             if let Some(mut prev_chunk) = top.get_prev() {
                 prev_chunk.set_next(Some(new_top));
             }
@@ -310,8 +308,8 @@ impl Overlay {
         for index in Self::bin_index_of_size(Self::MIN_USER_SIZE)..Self::BINS_LEN {
             unsafe { self.set_bin_chunk(index, None) }
         }
-        let mut chunk = unsafe { self.start_chunk() };
         unsafe {
+            let mut chunk = self.start_chunk();
             chunk.set_in_use(false);
             chunk.set_lower_in_use(true); // because there's no lower chunk
             let chunk_size = self.0.as_ptr().add(len).offset_from(chunk.0.as_ptr()) as usize;
@@ -325,6 +323,10 @@ impl Overlay {
     }
 
     unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, Chunk> {
+        if layout.size() == 0 {
+            return Ok(NonNull::dangling()); // feels like better than null?
+        }
+
         let mut chunk = None;
         for index in Self::bin_index_of_size(layout.size())..Self::BINS_LEN {
             chunk = unsafe { self.get_bin_chunk(index) };
@@ -343,6 +345,7 @@ impl Overlay {
             };
             (user_data, remain) = unsafe { chunk.split(layout) };
         }
+        // println!("{chunk:?} {user_data:?} {remain:?}");
 
         if unsafe { !chunk.is_top() } {
             unsafe {
@@ -360,8 +363,20 @@ impl Overlay {
             return Err(chunk);
         }
 
+        // println!("{chunk:?}");
         unsafe { chunk.set_in_use(true) }
-        Ok(user_data.unwrap())
+        let user_data = user_data.unwrap();
+        // a little duplication to `split`
+        let padding = unsafe { user_data.as_ptr().offset(-8) };
+        let padding_size = unsafe { padding.offset_from(chunk.0.as_ptr()) } as usize;
+        if padding_size != 0 {
+            // println!("padding size {padding_size}");
+            // which also clear meta bits
+            debug_assert_eq!(padding_size as u64 & Chunk::META_MASK, 0);
+            unsafe { *padding.cast::<u64>() = padding_size as _ }
+        }
+
+        Ok(user_data)
     }
 
     unsafe fn dealloc(&mut self, user_data: *mut u8) {
@@ -549,5 +564,28 @@ mod tests {
         run(1..10);
         run(repeat(1));
         run(1..);
+    }
+
+    #[test]
+    fn aligned_addr() {
+        fn run(sizes: impl Iterator<Item = usize>, align: usize) {
+            let alloc = Allocator::new(Fixed::from(vec![0; 1 << 12].into_boxed_slice()));
+            for size in sizes {
+                let object = unsafe { alloc.alloc(Layout::from_size_align(size, align).unwrap()) };
+                if object.is_null() {
+                    break;
+                }
+                assert_eq!(object.align_offset(align), 0);
+            }
+        }
+
+        run([1].into_iter(), 16);
+        run(1..10, 16);
+        run(1..10, 32);
+        run(repeat(1), 16);
+        run(repeat(1), 32);
+        run(1.., 16);
+        run(1.., 32);
+        run(1.., 64);
     }
 }
