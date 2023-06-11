@@ -1,7 +1,7 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
     ptr::{copy_nonoverlapping, null_mut, NonNull},
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
 };
 
 use crate::Space;
@@ -122,15 +122,19 @@ impl Chunk {
             unsafe { *padding.cast::<u64>() = padding_size as _ }
         }
 
+        let mut new_size = usize::max(padding_size as usize + layout.size(), Self::MIN_SIZE);
+        if new_size % 8 != 0 {
+            new_size += 8 - new_size % 8;
+        }
         let remain_size;
-        let new_size = padding_size as usize + layout.size();
         unsafe {
             debug_assert!(self.get_size() >= new_size);
             remain_size = self.get_size() - new_size;
-            self.set_size(new_size)
+            self.set_size(new_size);
         }
 
-        let remain = unsafe { user_data.as_ptr().add(layout.size()) };
+        // cannot just `get_higher_chunk` because we may be splitting the top chunk
+        let remain = unsafe { self.0.as_ptr().add(new_size) };
         let remain = if remain_size >= Self::MIN_SIZE {
             let mut remain = Self(NonNull::new(remain).unwrap());
             unsafe {
@@ -257,6 +261,7 @@ impl Overlay {
     // remove a chunk that is not the last chunk
     // because the last chunk (also the top chunk) never get removed, we can assume there will
     // always be at least one chunk presenting
+    // additionally, the old top chunk is also not removed here
     // updating top chunk goes into `update_top_chunk`
     unsafe fn remove_chunk(&mut self, chunk: Chunk) {
         let mut next_chunk;
@@ -282,7 +287,9 @@ impl Overlay {
         }
     }
 
+    // sematic equal to `remove_chunk(top)` + `add_chunk(new_top)`
     unsafe fn update_top_chunk(&mut self, top: Chunk, mut new_top: Chunk) {
+        // println!("update top {top:?} -> {new_top:?}");
         unsafe {
             new_top.set_next(None);
             new_top.set_prev(top.get_prev());
@@ -311,7 +318,7 @@ impl Overlay {
             chunk.set_size(chunk_size);
             chunk.set_prev(None);
             chunk.set_next(None);
-            self.set_bin_chunk(Self::bin_index_of_size(chunk_size), Some(chunk));
+            self.set_bin_chunk(Self::bin_index_of_size(usize::MAX), Some(chunk));
         }
         // a little bit of best-effort sanity marker for initialized space
         unsafe { *self.0.as_mut() = 0x82 }
@@ -326,6 +333,7 @@ impl Overlay {
             }
         }
         let mut chunk = chunk.expect("top chunk always reachable from bins");
+        // println!("{chunk:?}");
         let (mut user_data, mut remain) = unsafe { chunk.split(layout) };
         while user_data.is_none() {
             chunk = if let Some(next_chunk) = unsafe { chunk.get_next() } {
@@ -344,10 +352,7 @@ impl Overlay {
                 }
             }
         } else if let Some(remain) = remain {
-            unsafe {
-                self.update_top_chunk(chunk, remain);
-                self.remove_chunk(chunk);
-            }
+            unsafe { self.update_top_chunk(chunk, remain) }
         } else {
             // the case where the top chunk is almost the same size as requested allocation
             // i guess the algorithm cannot run if the top chunk is not free, so let's take the slow
@@ -380,7 +385,6 @@ impl Overlay {
             } else {
                 unsafe {
                     self.update_top_chunk(free_higher, chunk);
-                    self.remove_chunk(free_higher);
                     chunk.coalesce(free_higher);
                 }
             }
@@ -491,6 +495,14 @@ impl<S> Allocator<S> {
         unsafe { Overlay(space.first_mut().unwrap().into()).init(space.len()) };
         Self(Mutex::new(space))
     }
+
+    fn acquire_space(&self) -> MutexGuard<'_, S> {
+        loop {
+            if let Ok(space) = self.0.try_lock() {
+                break space;
+            }
+        }
+    }
 }
 
 unsafe impl<S> GlobalAlloc for Allocator<S>
@@ -498,29 +510,44 @@ where
     S: Space,
 {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let mut space = loop {
-            if let Ok(space) = self.0.try_lock() {
-                break space;
-            }
-        };
-        unsafe { Overlay::alloc_in_space(&mut *space, layout) }
+        unsafe { Overlay::alloc_in_space(&mut *self.acquire_space(), layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        let mut space = loop {
-            if let Ok(space) = self.0.try_lock() {
-                break space;
-            }
-        };
-        unsafe { Overlay::dealloc_in_space(&mut *space, ptr) }
+        unsafe { Overlay::dealloc_in_space(&mut *self.acquire_space(), ptr) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let mut space = loop {
-            if let Ok(space) = self.0.try_lock() {
-                break space;
+        unsafe { Overlay::realloc_in_space(&mut *self.acquire_space(), ptr, layout, new_size) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::iter::repeat;
+
+    use crate::space::Fixed;
+
+    use super::*;
+
+    #[test]
+    fn valid_addr() {
+        fn run(sizes: impl Iterator<Item = usize>) {
+            let mut data = vec![0; 1 << 12].into_boxed_slice();
+            let ptr_range = data.as_mut_ptr_range();
+            let alloc = Allocator::new(Fixed::from(data));
+            for size in sizes {
+                let object = unsafe { alloc.alloc(Layout::from_size_align(size, 1).unwrap()) };
+                if object.is_null() {
+                    break;
+                }
+                assert!(ptr_range.contains(&object));
             }
-        };
-        unsafe { Overlay::realloc_in_space(&mut *space, ptr, layout, new_size) }
+        }
+
+        run([1].into_iter());
+        run(1..10);
+        run(repeat(1));
+        run(1..);
     }
 }
