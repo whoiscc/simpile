@@ -15,6 +15,10 @@ where
     Self: DerefMut<Target = [u8]>,
 {
     fn set_size(&mut self, bytes: usize) -> bool;
+
+    fn grow(&mut self, min_bytes: usize) -> bool {
+        self.set_size(self.len() * usize::max((min_bytes / self.len()).next_power_of_two(), 1))
+    }
 }
 
 pub struct Mmap {
