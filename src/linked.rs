@@ -26,7 +26,7 @@ impl Chunk {
 
     unsafe fn set_in_use(&mut self, in_use: bool) {
         let meta = unsafe { self.0.cast::<u64>().as_mut() };
-        *meta |= (in_use as u64) << Self::IN_USE_BIT;
+        *meta = (*meta & !(1 << Self::IN_USE_BIT)) | ((in_use as u64) << Self::IN_USE_BIT);
         if let Some(mut higher) = unsafe { self.get_higher_chunk() } {
             unsafe { higher.set_lower_in_use(in_use) }
         }
@@ -37,9 +37,10 @@ impl Chunk {
         meta & (1 << Self::LOWER_IN_USE_BIT) != 0
     }
 
-    unsafe fn set_lower_in_use(&mut self, prev_in_use: bool) {
+    unsafe fn set_lower_in_use(&mut self, lower_in_use: bool) {
         let meta = unsafe { self.0.cast::<u64>().as_mut() };
-        *meta |= (prev_in_use as u64) << Self::LOWER_IN_USE_BIT;
+        *meta = (*meta & !(1 << Self::LOWER_IN_USE_BIT))
+            | ((lower_in_use as u64) << Self::LOWER_IN_USE_BIT);
     }
 
     unsafe fn get_size(&self) -> usize {
@@ -81,6 +82,8 @@ impl Chunk {
     }
 
     unsafe fn is_top(&self) -> bool {
+        // may be a little bit limited, but always safe first
+        debug_assert!(unsafe { !self.get_in_use() });
         // define the top (i.e. highest) chunk to have the largest size, so it is always also the
         // last chunk and has no next chunk
         unsafe { self.get_next().is_none() }
@@ -131,16 +134,15 @@ impl Chunk {
         }
 
         // cannot just `get_higher_chunk` because we may be splitting the top chunk
-        let remain = unsafe { self.0.as_ptr().add(new_size) };
-        let remain = if remain_size >= Self::MIN_SIZE {
-            let mut remain = Self(NonNull::new(remain).unwrap());
+        let remain = if remain_size < Self::MIN_SIZE {
+            None
+        } else {
+            let mut remain = Self(NonNull::new(unsafe { self.0.as_ptr().add(new_size) }).unwrap());
             unsafe {
                 remain.set_in_use(false);
                 remain.set_size(remain_size as _);
             }
             Some(remain)
-        } else {
-            None
         };
         (Some(user_data), remain)
     }
@@ -157,7 +159,8 @@ impl Chunk {
     }
 
     unsafe fn get_higher_chunk(&self) -> Option<Self> {
-        if unsafe { self.is_top() } {
+        // leveraging an invariant that the top chunk is never in used
+        if unsafe { !self.get_in_use() && self.is_top() } {
             None
         } else {
             Some(Self(
@@ -171,7 +174,7 @@ impl Chunk {
     }
 
     unsafe fn coalesce(&mut self, chunk: Self) {
-        debug_assert_eq!(unsafe { self.get_free_higher_chunk() }, Some(chunk));
+        debug_assert_eq!(unsafe { self.get_higher_chunk() }, Some(chunk));
         unsafe { self.set_size(self.get_size() + chunk.get_size()) }
     }
 }
@@ -322,20 +325,25 @@ impl Overlay {
         unsafe { *self.0.as_mut() = 0x82 }
     }
 
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, Chunk> {
-        if layout.size() == 0 {
-            return Ok(NonNull::dangling()); // feels like better than null?
-        }
-
+    // extract this subroutine for reusing in test helper
+    unsafe fn find_smallest(&self, min_size: usize) -> Chunk {
         let mut chunk = None;
-        for index in Self::bin_index_of_size(layout.size())..Self::BINS_LEN {
+        for index in Self::bin_index_of_size(min_size)..Self::BINS_LEN {
             chunk = unsafe { self.get_bin_chunk(index) };
             if chunk.is_some() {
                 break;
             }
         }
-        let mut chunk = chunk.expect("top chunk always reachable from bins");
         // println!("{chunk:?}");
+        chunk.expect("top chunk always reachable from bins")
+    }
+
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, Chunk> {
+        if layout.size() == 0 {
+            return Ok(NonNull::dangling()); // feels like better than null?
+        }
+
+        let mut chunk = unsafe { self.find_smallest(layout.size()) };
         let (mut user_data, mut remain) = unsafe { chunk.split(layout) };
         while user_data.is_none() {
             chunk = if let Some(next_chunk) = unsafe { chunk.get_next() } {
@@ -364,24 +372,22 @@ impl Overlay {
         }
 
         // println!("{chunk:?}");
-        unsafe { chunk.set_in_use(true) }
         let user_data = user_data.unwrap();
         // a little duplication to `split`
         let padding = unsafe { user_data.as_ptr().offset(-8) };
         let padding_size = unsafe { padding.offset_from(chunk.0.as_ptr()) } as usize;
         if padding_size != 0 {
             // println!("padding size {padding_size}");
-            // which also clear meta bits
-            debug_assert_eq!(padding_size as u64 & Chunk::META_MASK, 0);
+            debug_assert_eq!(padding_size as u64 & Chunk::META_MASK, 0); // which also clear meta bits
             unsafe { *padding.cast::<u64>() = padding_size as _ }
         }
+        unsafe { chunk.set_in_use(true) }
 
         Ok(user_data)
     }
 
     unsafe fn dealloc(&mut self, user_data: *mut u8) {
         let mut chunk = unsafe { Chunk::from_user_data(user_data) };
-        unsafe { chunk.set_in_use(false) }
         // coalesce with lower neighbor first to prevent update top chunk twice
         if let Some(mut free_lower) = unsafe { chunk.get_free_lower_chunk() } {
             unsafe {
@@ -399,13 +405,15 @@ impl Overlay {
                 }
             } else {
                 unsafe {
-                    self.update_top_chunk(free_higher, chunk);
+                    // have to coalesce first because we don't allow top chunk to coalesce
                     chunk.coalesce(free_higher);
+                    self.update_top_chunk(free_higher, chunk);
                 }
             }
         } else {
             unsafe { self.add_chunk(chunk) }
         }
+        unsafe { chunk.set_in_use(false) }
     }
 
     unsafe fn realloc(
@@ -538,6 +546,53 @@ where
 }
 
 #[cfg(test)]
+#[allow(unused)]
+impl<S> Allocator<S> {
+    unsafe fn iter_all_chunk(&self) -> impl Iterator<Item = Chunk>
+    where
+        S: Space,
+    {
+        use std::iter::from_fn;
+
+        let mut space = self.0.try_lock().unwrap();
+        debug_assert_eq!(space.first(), Some(&0x82));
+        let ptr_range = space.as_mut_ptr_range();
+        let mut chunk = Some(unsafe { Overlay(space.first_mut().unwrap().into()).start_chunk() });
+        from_fn(move || {
+            if let Some(item) = chunk {
+                debug_assert!(ptr_range.contains(&item.0.as_ptr()));
+                chunk = unsafe { item.get_higher_chunk() };
+                Some(item)
+            } else {
+                None
+            }
+        })
+    }
+
+    unsafe fn iter_free_chunk(&self) -> impl Iterator<Item = Chunk>
+    where
+        S: Space,
+    {
+        use std::iter::from_fn;
+
+        let mut space = self.0.try_lock().unwrap();
+        debug_assert_eq!(space.first(), Some(&0x82));
+        let ptr_range = space.as_mut_ptr_range();
+        let mut chunk =
+            Some(unsafe { Overlay(space.first_mut().unwrap().into()).find_smallest(0) });
+        from_fn(move || {
+            if let Some(item) = chunk {
+                debug_assert!(ptr_range.contains(&item.0.as_ptr()));
+                chunk = unsafe { item.get_next() };
+                Some(item)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::iter::repeat;
 
@@ -552,11 +607,11 @@ mod tests {
             let ptr_range = data.as_mut_ptr_range();
             let alloc = Allocator::new(Fixed::from(data));
             for size in sizes {
-                let object = unsafe { alloc.alloc(Layout::from_size_align(size, 1).unwrap()) };
-                if object.is_null() {
+                let ptr = unsafe { alloc.alloc(Layout::from_size_align(size, 1).unwrap()) };
+                if ptr.is_null() {
                     break;
                 }
-                assert!(ptr_range.contains(&object));
+                assert!(ptr_range.contains(&ptr));
             }
         }
 
@@ -571,11 +626,11 @@ mod tests {
         fn run(sizes: impl Iterator<Item = usize>, align: usize) {
             let alloc = Allocator::new(Fixed::from(vec![0; 1 << 12].into_boxed_slice()));
             for size in sizes {
-                let object = unsafe { alloc.alloc(Layout::from_size_align(size, align).unwrap()) };
-                if object.is_null() {
+                let ptr = unsafe { alloc.alloc(Layout::from_size_align(size, align).unwrap()) };
+                if ptr.is_null() {
                     break;
                 }
-                assert_eq!(object.align_offset(align), 0);
+                assert_eq!(ptr.align_offset(align), 0);
             }
         }
 
@@ -587,5 +642,31 @@ mod tests {
         run(1.., 16);
         run(1.., 32);
         run(1.., 64);
+    }
+
+    #[test]
+    fn alloc_dealloc_identical() {
+        fn run(layouts: impl Iterator<Item = Layout> + Clone) {
+            let alloc = Allocator::new(Fixed::from(vec![0; 1 << 11].into_boxed_slice()));
+            let chunks = Vec::from_iter(unsafe { alloc.iter_all_chunk() });
+            let ptrs = Vec::from_iter(
+                layouts
+                    .clone()
+                    .map(|layout| unsafe { alloc.alloc(layout) })
+                    .take_while(|ptr| !ptr.is_null()),
+            );
+            for (ptr, layout) in ptrs.into_iter().zip(layouts) {
+                println!("{:?}", Vec::from_iter(unsafe { alloc.iter_all_chunk() }));
+                println!("{ptr:?} {layout:?}");
+                unsafe { alloc.dealloc(ptr, layout) }
+            }
+            println!("{:?}", Vec::from_iter(unsafe { alloc.iter_all_chunk() }));
+            assert_eq!(Vec::from_iter(unsafe { alloc.iter_all_chunk() }), chunks);
+        }
+
+        run([Layout::from_size_align(1, 1).unwrap()].into_iter());
+        run((1..10).map(|size| Layout::from_size_align(size, 1).unwrap()));
+        run((0..=6).map(|align| Layout::from_size_align(1, 1 << align).unwrap()));
+        // run((1..).map(|size| Layout::from_size_align(size, 1).unwrap()));
     }
 }
