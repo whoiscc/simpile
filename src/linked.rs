@@ -1,5 +1,6 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
+    fmt::Debug,
     ptr::{copy_nonoverlapping, null_mut, NonNull},
     sync::{Mutex, MutexGuard},
 };
@@ -9,7 +10,7 @@ use crate::Space;
 // invariants:
 // chunk.ptr < chunk.limit (to be exact, chunk.ptr + CHUNK::MIN_SIZE <= chunk.limit)
 // if chunk1 and chunk2 belong to the same heap, then chunk1.limit == chunk2.limit
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Chunk {
     data: NonNull<u8>,
     limit: NonNull<u8>,
@@ -36,13 +37,11 @@ impl Chunk {
     }
 
     unsafe fn set_in_use(&mut self, in_use: bool) {
-        // do this first because `is_top` can only be used on free chunk
-        // asserting top chunk is never used, so in use chunk is not top
+        let meta = unsafe { self.data.cast::<u64>().as_mut() };
+        *meta = (*meta & !(1 << Self::IN_USE_BIT)) | ((in_use as u64) << Self::IN_USE_BIT);
         if unsafe { self.get_in_use() || !self.is_top() } {
             unsafe { self.get_higher_chunk().set_lower_in_use(in_use) }
         }
-        let meta = unsafe { self.data.cast::<u64>().as_mut() };
-        *meta = (*meta & !(1 << Self::IN_USE_BIT)) | ((in_use as u64) << Self::IN_USE_BIT);
     }
 
     unsafe fn get_lower_in_use(&self) -> bool {
@@ -203,16 +202,38 @@ impl Chunk {
         )
     }
 
-    // not assert `self` is not top chunk because this method will be called by the previous top
-    // chunk, which still "looks like" a top chunk when calling
+    // not assert `self` is not top chunk because
+    // 1. this method will be called by the previous top chunk, which still
+    // "looks like" a top chunk when calling
+    // 2. this method is only used by de/reallocation, and the (current) top chunk is never
+    // allocated, so never get de/reallocated
     // the assertion in `get_higher_chunk` make sure the "real" top chunk cannot call this
     unsafe fn get_free_higher_chunk(&self) -> Option<Self> {
         unsafe { Some(self.get_higher_chunk()).filter(|chunk| !chunk.get_in_use()) }
     }
 
     unsafe fn coalesce(&mut self, chunk: Self) {
-        debug_assert_eq!(unsafe { self.get_free_higher_chunk() }, Some(chunk));
+        debug_assert_eq!(unsafe { self.get_higher_chunk() }, chunk);
         unsafe { self.set_size(self.get_size() + chunk.get_size()) }
+    }
+}
+
+impl Debug for Chunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut meta = Vec::new();
+        if unsafe { self.get_in_use() } {
+            meta.push("in_use");
+        }
+        if unsafe { self.get_lower_in_use() } {
+            meta.push("lower_in_use");
+        }
+        write!(
+            f,
+            "Chunk({:?}, size = {}, meta = {})",
+            self.data.as_ptr(),
+            unsafe { self.get_size() },
+            meta.join(", ")
+        )
     }
 }
 
@@ -262,7 +283,7 @@ impl Overlay {
             debug_assert_ne!((size >> 8).leading_zeros(), usize::BITS);
             // m = index of most significant bit of (size >> 8), in range 0..16
             let m = (usize::BITS - (size >> 8).leading_zeros() - 1) as usize;
-            (m << 2) + ((size >> (m + 6)) & 3)
+            Self::EXACT_BINS_LEN + (m << 2) + ((size >> (m + 6)) & 3)
         }
     }
 
@@ -458,9 +479,8 @@ impl Overlay {
                 }
             } else {
                 unsafe {
-                    // have to coalesce first because we don't allow top chunk to coalesce
-                    chunk.coalesce(free_higher);
                     self.update_top_chunk(free_higher, chunk);
+                    chunk.coalesce(free_higher);
                 }
             }
         } else {
@@ -715,17 +735,14 @@ mod tests {
                     .take_while(|ptr| !ptr.is_null()),
             );
             for (ptr, layout) in ptrs.into_iter().zip(layouts) {
-                println!("{:?}", Vec::from_iter(unsafe { alloc.iter_all_chunk() }));
-                println!("{ptr:?} {layout:?}");
                 unsafe { alloc.dealloc(ptr, layout) }
             }
-            println!("{:?}", Vec::from_iter(unsafe { alloc.iter_all_chunk() }));
             assert_eq!(Vec::from_iter(unsafe { alloc.iter_all_chunk() }), chunks);
         }
 
-        // run([Layout::from_size_align(1, 1).unwrap()].into_iter());
-        // run((1..10).map(|size| Layout::from_size_align(size, 1).unwrap()));
-        // run((0..=6).map(|align| Layout::from_size_align(1, 1 << align).unwrap()));
-        // run((1..).map(|size| Layout::from_size_align(size, 1).unwrap()));
+        run([Layout::from_size_align(1, 1).unwrap()].into_iter());
+        run((1..10).map(|size| Layout::from_size_align(size, 1).unwrap()));
+        run((0..=6).map(|align| Layout::from_size_align(1, 1 << align).unwrap()));
+        run((1..).map(|size| Layout::from_size_align(size, 1).unwrap()));
     }
 }
