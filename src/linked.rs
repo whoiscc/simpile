@@ -313,7 +313,7 @@ impl Overlay {
                 // be the last chunk
                 debug_assert!(
                     chunk < bin_chunk,
-                    "adding {chunk:?} that is higher than the top {bin_chunk:?}"
+                    "adding {chunk:?} that is not lower than the top {bin_chunk:?}"
                 );
                 break;
             };
@@ -510,15 +510,24 @@ impl Overlay {
             if let (Some(user_data), remain) =
                 chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap())
             {
-                if let Some(remain) = remain {
-                    self.add_chunk(remain);
+                if !free_higher.is_top() {
+                    self.remove_chunk(free_higher);
+                    if let Some(remain) = remain {
+                        self.add_chunk(remain);
+                    }
+                    return Some(user_data);
                 }
-                Some(user_data)
-            } else {
-                chunk.set_size(chunk_size);
-                free_higher.set_size(higher_chunk_size);
-                None
+                if let Some(remain) = remain {
+                    self.update_top_chunk(free_higher, remain);
+                    return Some(user_data);
+                }
+                // otherwise, we should prevent use the top chunk even if it is large enough for
+                // the reallocation, same as the fallback path in `alloc`
             }
+
+            chunk.set_size(chunk_size);
+            free_higher.set_size(higher_chunk_size);
+            None
         }
     }
 
@@ -673,11 +682,20 @@ impl<S> Allocator<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::repeat;
+    use std::{iter::repeat, slice};
 
     use crate::space::Fixed;
 
     use super::*;
+
+    #[test]
+    fn single_free_chunk_on_init() {
+        let alloc = Allocator::new(Fixed::from(vec![0; 1 << 12].into_boxed_slice()));
+        let all_chunk = Vec::from_iter(unsafe { alloc.iter_all_chunk() });
+        let free_chunk = Vec::from_iter(unsafe { alloc.iter_free_chunk() });
+        assert_eq!(all_chunk.len(), 1);
+        assert_eq!(free_chunk, all_chunk);
+    }
 
     #[test]
     fn valid_addr() {
@@ -726,15 +744,29 @@ mod tests {
     #[test]
     fn alloc_dealloc_identical() {
         fn run(layouts: impl Iterator<Item = Layout> + Clone) {
-            let alloc = Allocator::new(Fixed::from(vec![0; 1 << 11].into_boxed_slice()));
+            let alloc = Allocator::new(Fixed::from(vec![0; 1 << 12].into_boxed_slice()));
             let chunks = Vec::from_iter(unsafe { alloc.iter_all_chunk() });
             let ptrs = Vec::from_iter(
                 layouts
                     .clone()
-                    .map(|layout| unsafe { alloc.alloc(layout) })
-                    .take_while(|ptr| !ptr.is_null()),
+                    .map(|layout| unsafe { (alloc.alloc(layout), layout) })
+                    .take_while(|(ptr, _)| !ptr.is_null()),
             );
-            for (ptr, layout) in ptrs.into_iter().zip(layouts) {
+            for (ptr, layout) in ptrs.into_iter() {
+                unsafe { alloc.dealloc(ptr, layout) }
+            }
+            assert_eq!(Vec::from_iter(unsafe { alloc.iter_all_chunk() }), chunks);
+
+            // again but dealloc in LIFO order
+            // yet to find a way to eliminate this duplication
+            let alloc = Allocator::new(Fixed::from(vec![0; 1 << 12].into_boxed_slice()));
+            let chunks = Vec::from_iter(unsafe { alloc.iter_all_chunk() });
+            let ptrs = Vec::from_iter(
+                layouts
+                    .map(|layout| unsafe { (alloc.alloc(layout), layout) })
+                    .take_while(|(ptr, _)| !ptr.is_null()),
+            );
+            for (ptr, layout) in ptrs.into_iter().rev() {
                 unsafe { alloc.dealloc(ptr, layout) }
             }
             assert_eq!(Vec::from_iter(unsafe { alloc.iter_all_chunk() }), chunks);
@@ -744,5 +776,39 @@ mod tests {
         run((1..10).map(|size| Layout::from_size_align(size, 1).unwrap()));
         run((0..=6).map(|align| Layout::from_size_align(1, 1 << align).unwrap()));
         run((1..).map(|size| Layout::from_size_align(size, 1).unwrap()));
+    }
+
+    #[test]
+    fn realloc_in_place() {
+        let alloc = Allocator::new(Fixed::from(vec![0; 1 << 12].into_boxed_slice()));
+        let mut layout = Layout::from_size_align(8, 1).unwrap();
+        let ptr = unsafe { alloc.alloc(layout) };
+        let new_ptr = unsafe { alloc.realloc(ptr, layout, 16) };
+        assert_eq!(new_ptr, ptr);
+
+        layout = Layout::from_size_align(16, 1).unwrap();
+        loop {
+            let new_ptr = unsafe { alloc.realloc(ptr, layout, layout.size() * 2) };
+            if new_ptr.is_null() {
+                break;
+            }
+            assert_eq!(new_ptr, ptr);
+            layout = Layout::from_size_align(layout.size() * 2, 1).unwrap();
+        }
+    }
+
+    #[test]
+    fn realloc_copied() {
+        let alloc = Allocator::new(Fixed::from(vec![0; 1 << 12].into_boxed_slice()));
+        let layout = Layout::from_size_align(8, 1).unwrap();
+        let ptr = unsafe { alloc.alloc(layout) };
+        unsafe { slice::from_raw_parts_mut(ptr, 8) }
+            .copy_from_slice(&u64::to_ne_bytes(0x1122334455667788));
+        unsafe { alloc.alloc(layout) };
+        let new_ptr = unsafe { alloc.realloc(ptr, layout, 16) };
+        assert_eq!(
+            unsafe { slice::from_raw_parts_mut(new_ptr, 8) },
+            &u64::to_ne_bytes(0x1122334455667788)
+        );
     }
 }
