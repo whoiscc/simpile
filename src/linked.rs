@@ -241,7 +241,6 @@ impl Chunk {
     }
 
     unsafe fn coalesce(&mut self, chunk: Self) {
-        debug_assert!(unsafe { !chunk.is_top() });
         debug_assert_eq!(unsafe { self.get_free_higher_chunk() }, Some(chunk));
         unsafe {
             self.set_size(self.get_size() + chunk.get_size());
@@ -515,8 +514,6 @@ impl Overlay {
 
     unsafe fn dealloc(&mut self, user_data: *mut u8) {
         let mut chunk = unsafe { Chunk::from_user_data(user_data, self.limit) };
-        // println!("{chunk:?}");
-
         if let Some(mut free_lower) = unsafe { chunk.get_free_lower_chunk() } {
             unsafe {
                 self.remove_chunk(free_lower);
@@ -658,12 +655,11 @@ impl Overlay {
     unsafe fn dealloc_in_space(space: &mut impl Space, user_data: *mut u8) {
         debug_assert_eq!(space.first(), Some(&0x82));
         let mut overlay = Self::new(space);
-        if space.as_mut_ptr_range().contains(&user_data) {
-            unsafe { overlay.dealloc(user_data) }
+        unsafe {
+            overlay.dealloc(user_data);
+            overlay.sanity_check();
         }
-        unsafe { overlay.sanity_check() }
 
-        // TODO otherwise proxy to System
         // TODO do space shrinking
     }
 
