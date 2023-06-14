@@ -164,7 +164,10 @@ impl Chunk {
         debug_assert!(padding_size >= 0);
         // the padding indicator will only be writen after chain updated, or pointers may get
         // corrupted by this
-        let mut new_size = usize::max(padding_size as usize + layout.size(), Self::MIN_SIZE);
+        let mut new_size = usize::max(
+            Chunk::META_SIZE + padding_size as usize + layout.size(),
+            Self::MIN_SIZE,
+        );
         if new_size % 8 != 0 {
             new_size += 8 - new_size % 8;
         }
@@ -406,6 +409,8 @@ impl Overlay {
         }
         unsafe {
             let mut chunk = self.start_chunk();
+            chunk.set_prev(None);
+            chunk.set_next(None);
             chunk.set_in_use(false);
             chunk.set_lower_in_use(true); // because there's no lower chunk
             let chunk_size = self
@@ -414,12 +419,13 @@ impl Overlay {
                 .add(len)
                 .offset_from(chunk.data.as_ptr()) as usize;
             chunk.set_size(chunk_size);
-            chunk.set_prev(None);
-            chunk.set_next(None);
             self.set_bin_chunk(Self::bin_index_of_size(usize::MAX), Some(chunk));
         }
         // a little bit of best-effort sanity marker for initialized space
-        unsafe { *self.space.as_mut() = 0x82 }
+        unsafe {
+            *self.space.as_mut() = 0x82;
+            self.sanity_check()
+        }
     }
 
     // extract this subroutine for reusing in test helper
@@ -450,6 +456,7 @@ impl Overlay {
             (user_data, remain) = unsafe { chunk.split(layout) };
         }
         // println!("{chunk:?} {user_data:?} {remain:?}");
+        debug_assert!(unsafe { chunk.get_size() } >= layout.size() + Chunk::META_SIZE);
 
         if unsafe { !chunk.is_top() } {
             unsafe {
@@ -578,7 +585,9 @@ impl Overlay {
     unsafe fn alloc_in_space(space: &mut impl Space, layout: Layout) -> *mut u8 {
         debug_assert_eq!(space.first(), Some(&0x82));
         let mut overlay = Self::new(space);
-        match unsafe { overlay.alloc(layout) } {
+        unsafe { overlay.sanity_check() }
+
+        let user_data = match unsafe { overlay.alloc(layout) } {
             Ok(user_data) => user_data.as_ptr(),
             Err(mut top_chunk) => {
                 let size = space.len();
@@ -597,14 +606,19 @@ impl Overlay {
                     .as_ptr()
                 }
             }
-        }
+        };
+        unsafe { overlay.sanity_check() }
+        user_data
     }
 
     unsafe fn dealloc_in_space(space: &mut impl Space, user_data: *mut u8) {
         debug_assert_eq!(space.first(), Some(&0x82));
+        let mut overlay = Self::new(space);
         if space.as_mut_ptr_range().contains(&user_data) {
-            unsafe { Self::new(space).dealloc(user_data) }
+            unsafe { overlay.dealloc(user_data) }
         }
+        unsafe { overlay.sanity_check() }
+
         // TODO otherwise proxy to System
         // TODO do space shrinking
     }
@@ -618,6 +632,7 @@ impl Overlay {
         debug_assert_eq!(space.first(), Some(&0x82));
         let mut overlay = Self::new(space);
         if let Some(user_data) = unsafe { overlay.realloc(user_data, layout, new_size) } {
+            unsafe { overlay.sanity_check() }
             return user_data.as_ptr();
         }
 
@@ -659,6 +674,13 @@ impl<S> Allocator<S> {
             }
         }
     }
+
+    pub fn sanity_check(&self)
+    where
+        S: Space,
+    {
+        unsafe { Overlay::new(&mut *self.acquire_space()).sanity_check() }
+    }
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
@@ -692,18 +714,14 @@ where
     }
 }
 
-#[cfg(any(test, dev))]
+// #[cfg(any(test, dev))]
 #[allow(unused)]
-impl<S> Allocator<S> {
-    unsafe fn iter_all_chunk(&self) -> impl Iterator<Item = Chunk>
-    where
-        S: Space,
-    {
+impl Overlay {
+    unsafe fn iter_all_chunk(&self) -> impl Iterator<Item = Chunk> {
         use std::iter::from_fn;
 
-        let mut space = self.acquire_space();
-        debug_assert_eq!(space.first(), Some(&0x82));
-        let mut chunk = Some(unsafe { Overlay::new(&mut *space).start_chunk() });
+        debug_assert_eq!(unsafe { self.space.as_ref() }, &0x82);
+        let mut chunk = Some(unsafe { self.start_chunk() });
         from_fn(move || {
             let item = chunk;
             chunk = match item {
@@ -716,15 +734,11 @@ impl<S> Allocator<S> {
         })
     }
 
-    unsafe fn iter_free_chunk(&self) -> impl Iterator<Item = Chunk>
-    where
-        S: Space,
-    {
+    unsafe fn iter_free_chunk(&self) -> impl Iterator<Item = Chunk> {
         use std::iter::from_fn;
 
-        let mut space = self.acquire_space();
-        debug_assert_eq!(space.first(), Some(&0x82));
-        let mut chunk = Some(unsafe { Overlay::new(&mut *space).find_smallest(0) });
+        debug_assert_eq!(unsafe { self.space.as_ref() }, &0x82);
+        let mut chunk = Some(unsafe { self.find_smallest(0) });
         from_fn(move || {
             let item = chunk;
             if let Some(item) = item {
@@ -732,6 +746,14 @@ impl<S> Allocator<S> {
             }
             item
         })
+    }
+
+    unsafe fn sanity_check(&self) {
+        let mut chunks = [None; 10];
+        for (i, chunk) in unsafe { self.iter_all_chunk() }.enumerate() {
+            chunks[i] = Some(chunk);
+            debug_assert!(unsafe { chunk.get_size() } >= Chunk::MIN_SIZE, "{chunks:?}",);
+        }
     }
 }
 
@@ -746,8 +768,10 @@ mod tests {
     #[test]
     fn single_free_chunk_on_init() {
         let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
-        let all_chunk = Vec::from_iter(unsafe { alloc.iter_all_chunk() });
-        let free_chunk = Vec::from_iter(unsafe { alloc.iter_free_chunk() });
+        let all_chunk =
+            Vec::from_iter(unsafe { Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk() });
+        let free_chunk =
+            Vec::from_iter(unsafe { Overlay::new(&mut *alloc.acquire_space()).iter_free_chunk() });
         assert_eq!(all_chunk.len(), 1);
         assert_eq!(free_chunk, all_chunk);
     }
@@ -800,7 +824,9 @@ mod tests {
     fn alloc_dealloc_identical() {
         fn run(layouts: impl Iterator<Item = Layout> + Clone) {
             let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
-            let chunks = Vec::from_iter(unsafe { alloc.iter_all_chunk() });
+            let chunks = Vec::from_iter(unsafe {
+                Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk()
+            });
             let ptrs = Vec::from_iter(
                 layouts
                     .clone()
@@ -811,12 +837,19 @@ mod tests {
                 // println!("{ptr:?} {layout:?}");
                 unsafe { alloc.dealloc(ptr, layout) }
             }
-            assert_eq!(Vec::from_iter(unsafe { alloc.iter_all_chunk() }), chunks);
+            assert_eq!(
+                Vec::from_iter(unsafe {
+                    Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk()
+                }),
+                chunks
+            );
 
             // again but dealloc in LIFO order
             // yet to find a way to eliminate this duplication
             let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
-            let chunks = Vec::from_iter(unsafe { alloc.iter_all_chunk() });
+            let chunks = Vec::from_iter(unsafe {
+                Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk()
+            });
             let ptrs = Vec::from_iter(
                 layouts
                     .map(|layout| unsafe { (alloc.alloc(layout), layout) })
@@ -825,7 +858,12 @@ mod tests {
             for (ptr, layout) in ptrs.into_iter().rev() {
                 unsafe { alloc.dealloc(ptr, layout) }
             }
-            assert_eq!(Vec::from_iter(unsafe { alloc.iter_all_chunk() }), chunks);
+            assert_eq!(
+                Vec::from_iter(unsafe {
+                    Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk()
+                }),
+                chunks
+            );
         }
 
         // run([Layout::from_size_align(1, 1).unwrap()].into_iter());

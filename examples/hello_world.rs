@@ -36,5 +36,6 @@ unsafe impl GlobalAlloc for Global {
 static GLOBAL: Global = Global(OnceLock::new());
 
 fn main() {
+    GLOBAL.0.get_or_init(|| unreachable!()).sanity_check();
     println!("Hello, world!");
 }
