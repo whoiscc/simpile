@@ -245,9 +245,7 @@ impl Chunk {
         debug_assert_eq!(unsafe { self.get_free_higher_chunk() }, Some(chunk));
         unsafe {
             self.set_size(self.get_size() + chunk.get_size());
-            if chunk.get_in_use() || !chunk.is_top() {
-                self.set_in_use(self.get_in_use()) // update lower_in_use on higher chunk
-            }
+            self.set_in_use(self.get_in_use()) // update lower_in_use on higher chunk
         }
     }
 }
@@ -625,22 +623,27 @@ impl Overlay {
                 } else {
                     overlay = Self::new(space);
                     top.limit = overlay.limit; // the only `Chunk` we are keeping
-                    let new_size = space.len();
+                    let new_size = dbg!(space.len());
                     assert_eq!(new_size % 8, 0);
                     unsafe {
-                        top.set_size(new_size - size);
-                        top.set_in_use(false); // update lower_in_use on the new top chunk
-                        let mut new_top = top.get_higher_chunk();
-                        #[cfg(any(dev, test))]
-                        debug_assert_eq!(
-                            new_top.data.as_ptr().add(Chunk::MIN_SIZE),
-                            overlay.limit.as_ptr()
+                        let mut new_top = Chunk::new(
+                            NonNull::new(space.as_mut_ptr_range().end.sub(Chunk::MIN_SIZE))
+                                .unwrap(),
+                            overlay.limit,
                         );
                         new_top.set_prev(None);
                         new_top.set_next(None);
                         new_top.set_in_use(false);
                         new_top.set_size(Chunk::MIN_SIZE);
                         overlay.update_top_chunk(top, new_top);
+                        top.set_size(new_size - size);
+                        top.set_in_use(false); // update lower_in_use on the new top chunk
+                        if let Some(mut free_lower) = top.get_free_lower_chunk() {
+                            // not coalescing because `top` looks like a top chunk
+                            overlay.remove_chunk(free_lower);
+                            free_lower.set_size(free_lower.get_size() + top.get_size());
+                            overlay.add_chunk(free_lower);
+                        }
                         overlay.alloc(layout)
                     }
                     .expect("second allocating try always success")
@@ -795,6 +798,7 @@ impl Overlay {
             chunks[i % 10] = Some(chunk);
             debug_assert!(unsafe { chunk.get_size() } >= Chunk::MIN_SIZE, "{chunks:?}",);
         }
+        // TODO more check if needed
     }
 }
 
@@ -802,7 +806,7 @@ impl Overlay {
 mod tests {
     use std::{iter::repeat, slice};
 
-    use crate::space::Fixed;
+    use crate::space::{Fixed, Mmap};
 
     use super::*;
 
@@ -815,6 +819,18 @@ mod tests {
             Vec::from_iter(unsafe { Overlay::new(&mut *alloc.acquire_space()).iter_free_chunk() });
         assert_eq!(all_chunk.len(), 2);
         assert_eq!(free_chunk, all_chunk);
+    }
+
+    #[test]
+    fn working_debug_chunk() {
+        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        assert!(format!(
+            "{:?}",
+            unsafe { Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk() }
+                .next()
+                .unwrap()
+        )
+        .starts_with("Chunk"));
     }
 
     #[test]
@@ -940,10 +956,18 @@ mod tests {
         unsafe { slice::from_raw_parts_mut(ptr, 8) }
             .copy_from_slice(&u64::to_ne_bytes(0x1122334455667788));
         unsafe { alloc.alloc(layout) };
-        let new_ptr = unsafe { alloc.realloc(ptr, layout, 16) };
+        let new_ptr = unsafe { alloc.realloc(ptr, layout, 32) };
         assert_eq!(
             unsafe { slice::from_raw_parts_mut(new_ptr, 8) },
             &u64::to_ne_bytes(0x1122334455667788)
         );
+    }
+
+    #[test]
+    fn grow() {
+        let mut space = Mmap::new();
+        space.set_size(1 << 10);
+        let alloc = Allocator::new(space);
+        unsafe { alloc.alloc(Layout::from_size_align(1 << 10, 1).unwrap()) };
     }
 }
