@@ -26,6 +26,9 @@ pub struct Mmap {
     len: usize,
 }
 
+unsafe impl Send for Mmap {}
+unsafe impl Sync for Mmap {}
+
 impl Mmap {
     pub const fn new() -> Self {
         Self {
@@ -155,7 +158,7 @@ mod tests {
     #[test]
     fn persistent_data() {
         fn run<S: Space>(space: &mut S) {
-            let done = space.set_size(1 << 12); // 4KB
+            let done = space.set_size(4 << 10); // 4KB
             assert!(done);
             let source = b"important data";
             space[..source.len()].copy_from_slice(source);
@@ -163,19 +166,19 @@ mod tests {
             assert_eq!(&space[..source.len()], source);
         }
         run(&mut Mmap::new());
-        run(&mut Fixed::from(vec![0; 1 << 12].into_boxed_slice()));
+        run(&mut Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
     }
 
     #[test]
     fn aligned_data() {
         fn run<S: Space>(space: &mut S) {
-            space.set_size(1 << 12);
-            assert_eq!((space.as_ptr() as usize) % (1 << 12), 0);
+            space.set_size(4 << 10);
+            assert_eq!((space.as_ptr() as usize) % (4 << 10), 0);
         }
         run(&mut Mmap::new());
-        let layout = Layout::from_size_align(1 << 12, 1 << 12).unwrap();
+        let layout = Layout::from_size_align(4 << 10, 4 << 10).unwrap();
         let mut space = Fixed::from(unsafe {
-            Box::<[_]>::from_raw(slice::from_raw_parts_mut(alloc(layout), 1 << 12))
+            Box::<[_]>::from_raw(slice::from_raw_parts_mut(alloc(layout), 4 << 10))
         });
         run(&mut space);
         unsafe {
