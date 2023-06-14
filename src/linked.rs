@@ -754,8 +754,7 @@ where
     }
 }
 
-// #[cfg(any(test, dev))]
-#[allow(unused)]
+#[cfg(any(test, dev))]
 impl Overlay {
     unsafe fn iter_all_chunk(&self) -> impl Iterator<Item = Chunk> {
         use std::iter::from_fn;
@@ -796,6 +795,11 @@ impl Overlay {
         }
         // TODO more check if needed
     }
+}
+
+#[cfg(not(any(test, dev)))]
+impl Overlay {
+    unsafe fn sanity_check(&self) {}
 }
 
 #[cfg(test)]
