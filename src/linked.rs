@@ -146,6 +146,7 @@ impl Chunk {
 
     unsafe fn from_user_data(
         user_data: *mut u8,
+        layout: Layout,
         #[cfg(any(dev, test))] limit: NonNull<u8>,
         #[cfg(not(any(dev, test)))] limit: (),
     ) -> Self {
@@ -153,6 +154,10 @@ impl Chunk {
             NonNull::new(unsafe { user_data.offset(-8) }).unwrap(),
             limit,
         );
+        if layout.align() <= 8 {
+            debug_assert!(unsafe { chunk.get_in_use() });
+            return chunk;
+        }
         if unsafe { !chunk.get_in_use() } {
             // alignment padding indicator, which should set all meta bits to 0
             debug_assert!(!unsafe { chunk.get_lower_in_use() });
@@ -512,8 +517,8 @@ impl Overlay {
         Ok(user_data)
     }
 
-    unsafe fn dealloc(&mut self, user_data: *mut u8) {
-        let mut chunk = unsafe { Chunk::from_user_data(user_data, self.limit) };
+    unsafe fn dealloc(&mut self, user_data: *mut u8, layout: Layout) {
+        let mut chunk = unsafe { Chunk::from_user_data(user_data, layout, self.limit) };
         if let Some(mut free_lower) = unsafe { chunk.get_free_lower_chunk() } {
             unsafe {
                 self.remove_chunk(free_lower);
@@ -546,7 +551,7 @@ impl Overlay {
         layout: Layout,
         new_size: usize,
     ) -> Option<NonNull<u8>> {
-        let mut chunk = unsafe { Chunk::from_user_data(user_data, self.limit) };
+        let mut chunk = unsafe { Chunk::from_user_data(user_data, layout, self.limit) };
         // println!("{chunk:?} {layout:?} -> {new_size}");
         if let (Some(user_data), remain) =
             unsafe { chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap()) }
@@ -654,11 +659,11 @@ impl Overlay {
         user_data
     }
 
-    unsafe fn dealloc_in_space(space: &mut impl Space, user_data: *mut u8) {
+    unsafe fn dealloc_in_space(space: &mut impl Space, user_data: *mut u8, layout: Layout) {
         debug_assert_eq!(space.first(), Some(&0x82));
         let mut overlay = Self::new(space);
         unsafe {
-            overlay.dealloc(user_data);
+            overlay.dealloc(user_data, layout);
             overlay.sanity_check();
         }
 
@@ -689,7 +694,7 @@ impl Overlay {
         } else {
             unsafe {
                 copy_nonoverlapping(user_data, new_user_data, layout.size());
-                overlay.dealloc(user_data);
+                overlay.dealloc(user_data, layout);
             }
             new_user_data
         }
@@ -741,7 +746,7 @@ where
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if ENABLED.load(SeqCst) && !panicking() {
-            unsafe { Overlay::dealloc_in_space(&mut *self.acquire_space(), ptr) }
+            unsafe { Overlay::dealloc_in_space(&mut *self.acquire_space(), ptr, layout) }
         } else {
             unsafe { System.dealloc(ptr, layout) }
         }
@@ -814,6 +819,7 @@ mod tests {
 
     #[test]
     fn single_free_chunk_on_init() {
+        // leveraging the fact that System allocator always allocate 8 bytes aligned memory
         let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
         let all_chunk =
             Vec::from_iter(unsafe { Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk() });
