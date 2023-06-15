@@ -470,7 +470,7 @@ impl Overlay {
         }
 
         let mut chunk = unsafe { self.find_smallest(layout.size()) };
-        // println!("{chunk:?}");
+        // println!("{layout:?} {chunk:?}");
         let mut user_data = unsafe { chunk.get_user_data(layout) };
         while user_data.is_none() {
             chunk = if let Some(next_chunk) = unsafe { chunk.get_next() } {
@@ -620,7 +620,7 @@ impl Overlay {
                 } else {
                     overlay = Self::new(space);
                     top.limit = overlay.limit; // the only `Chunk` we are keeping
-                    let new_size = dbg!(space.len());
+                    let new_size = space.len();
                     assert_eq!(new_size % 8, 0);
                     unsafe {
                         let mut new_top = Chunk::new(
@@ -640,6 +640,8 @@ impl Overlay {
                             overlay.remove_chunk(free_lower);
                             free_lower.set_size(free_lower.get_size() + top.get_size());
                             overlay.add_chunk(free_lower);
+                        } else {
+                            overlay.add_chunk(top);
                         }
                         overlay.alloc(layout)
                     }
@@ -968,6 +970,8 @@ mod tests {
         let mut space = Mmap::new();
         space.set_size(1 << 10);
         let alloc = Allocator::new(space);
-        unsafe { alloc.alloc(Layout::from_size_align(1 << 10, 1).unwrap()) };
+        for size in 1..100 {
+            unsafe { alloc.alloc(Layout::from_size_align(size, 1).unwrap()) };
+        }
     }
 }
