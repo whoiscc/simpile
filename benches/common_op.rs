@@ -4,15 +4,15 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use simpile::{linked::Allocator, space::Mmap, Space};
 
 fn run(c: &mut Criterion) {
+    let mut group = c.benchmark_group("One Alloc");
     let layout = Layout::from_size_align(1, 1).unwrap();
-    c.bench_function("system 1", |b| {
+    group.bench_function("system", |b| {
         b.iter(|| {
             let ptr = black_box(unsafe { System.alloc(layout) });
             unsafe { System.dealloc(ptr, layout) }
         })
     });
-
-    c.bench_function("linked 1", |b| {
+    group.bench_function("linked", |b| {
         let mut space = Mmap::new();
         space.set_size(1 << 10);
         let alloc = Allocator::new(space);
@@ -21,8 +21,10 @@ fn run(c: &mut Criterion) {
             unsafe { alloc.dealloc(ptr, layout) }
         })
     });
+    group.finish();
 
-    c.bench_function("system 1..100", |b| {
+    let mut group = c.benchmark_group("1..100 Alloc");
+    group.bench_function("system", |b| {
         b.iter(|| {
             let ptrs = Vec::from_iter((1..100).map(|size| {
                 black_box(unsafe { System.alloc(Layout::from_size_align(size, 1).unwrap()) })
@@ -32,8 +34,7 @@ fn run(c: &mut Criterion) {
             }
         })
     });
-
-    c.bench_function("linked 1..100", |b| {
+    group.bench_function("linked", |b| {
         let mut space = Mmap::new();
         space.set_size(16 << 10);
         let alloc = Allocator::new(space);
@@ -46,8 +47,10 @@ fn run(c: &mut Criterion) {
             }
         })
     });
+    group.finish();
 
-    c.bench_function("system 1..100 reverse", |b| {
+    let mut group = c.benchmark_group("1..100 Alloc LIFO");
+    group.bench_function("system", |b| {
         b.iter(|| {
             let ptrs = Vec::from_iter((1..100).map(|size| {
                 black_box(unsafe { System.alloc(Layout::from_size_align(size, 1).unwrap()) })
@@ -57,8 +60,7 @@ fn run(c: &mut Criterion) {
             }
         })
     });
-
-    c.bench_function("linked 1..100 reverse", |b| {
+    group.bench_function("linked", |b| {
         let mut space = Mmap::new();
         space.set_size(16 << 10);
         let alloc = Allocator::new(space);
@@ -71,6 +73,7 @@ fn run(c: &mut Criterion) {
             }
         })
     });
+    group.finish();
 }
 
 criterion_group!(benches, run);

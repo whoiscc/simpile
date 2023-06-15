@@ -9,6 +9,10 @@ edition = "2021"
 name = "common_op"
 harness = false
 
+[profile.bench]
+lto = true
+codegen-units = 1
+
 [dependencies]
 nix = "0.26.2"
 
