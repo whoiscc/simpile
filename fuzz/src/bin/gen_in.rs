@@ -8,14 +8,14 @@ fn main() -> std::io::Result<()> {
     write(
         "in/1",
         AllocatorMethod::to_bytes(&[
-            AllocatorMethod::Malloc { size: 1 },
+            AllocatorMethod::Alloc { size: 1 },
             AllocatorMethod::Dealloc { index: 0 },
         ]),
     )?;
     write(
         "in/2",
         AllocatorMethod::to_bytes(&[
-            AllocatorMethod::Malloc { size: 1 },
+            AllocatorMethod::Alloc { size: 1 },
             AllocatorMethod::Realloc {
                 index: 0,
                 new_size: 2,

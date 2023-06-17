@@ -5,7 +5,7 @@ use std::{
 
 #[derive(Debug)]
 pub enum AllocatorMethod {
-    Malloc { size: usize },
+    Alloc { size: usize },
     Dealloc { index: usize },
     Realloc { index: usize, new_size: usize },
 }
@@ -21,7 +21,7 @@ impl AllocatorMethod {
                 0 => {
                     let mut size = [0; N];
                     bytes.read_exact(&mut size)?;
-                    methods.push(Self::Malloc {
+                    methods.push(Self::Alloc {
                         size: usize::from_le_bytes(size),
                     });
                 }
@@ -54,7 +54,7 @@ impl AllocatorMethod {
         let mut bytes = Vec::new();
         for method in methods {
             match method {
-                Self::Malloc { size } => {
+                Self::Alloc { size } => {
                     bytes.write(&[0]).unwrap();
                     bytes.write(&size.to_le_bytes()).unwrap();
                 }

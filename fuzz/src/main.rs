@@ -9,9 +9,9 @@ fn run_fuzz(methods: Vec<AllocatorMethod>) {
     let mut objects = Vec::new();
 
     for method in methods {
-        println!("{method:?}");
+        println!("{method:?},");
         match method {
-            AllocatorMethod::Malloc { size } => {
+            AllocatorMethod::Alloc { size } => {
                 // TODO
                 let Ok(layout) = Layout::from_size_align(size, 1) else {
                     continue;

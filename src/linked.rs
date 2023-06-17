@@ -502,7 +502,7 @@ impl Overlay {
             }
         }
 
-        // println!("{chunk:?}");
+        // println!("alloc {chunk:?}");
         unsafe { chunk.set_in_use(true) }
 
         let user_data = user_data.unwrap();
@@ -560,7 +560,10 @@ impl Overlay {
         if let (Some(user_data), remain) =
             unsafe { chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap()) }
         {
-            debug_assert!(remain.is_none());
+            // debug_assert!(remain.is_none());
+            if let Some(remain) = remain {
+                unsafe { self.add_chunk(remain) }
+            }
             return Some(user_data);
         }
 
@@ -591,6 +594,7 @@ impl Overlay {
             unsafe { chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap()) }
         {
             // println!("{chunk:?}");
+            unsafe { chunk.set_in_use(true) } // update low_in_use on the new higher chunk
             if let Some(remain) = remain {
                 unsafe { self.add_chunk(remain) }
             }
@@ -801,9 +805,11 @@ impl Overlay {
     unsafe fn sanity_check(&self) {
         let mut chunks = [None; 10];
         for (i, chunk) in unsafe { self.iter_all_chunk() }.enumerate() {
+            // println!("{chunk:?}");
             chunks[i % 10] = Some(chunk);
             debug_assert!(unsafe { chunk.get_size() } >= Chunk::MIN_SIZE, "{chunks:?}",);
         }
+        // println!()
         // TODO more check if needed
     }
 }
