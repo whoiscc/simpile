@@ -551,6 +551,10 @@ impl Overlay {
         layout: Layout,
         new_size: usize,
     ) -> Option<NonNull<u8>> {
+        if new_size <= layout.size() {
+            return Some(NonNull::new(user_data).unwrap());
+        }
+
         let mut chunk = unsafe { Chunk::from_user_data(user_data, layout, self.limit) };
         // println!("{chunk:?} {layout:?} -> {new_size}");
         if let (Some(user_data), remain) =
