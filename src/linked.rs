@@ -551,11 +551,13 @@ impl Overlay {
         layout: Layout,
         new_size: usize,
     ) -> Option<NonNull<u8>> {
-        if new_size <= layout.size() {
-            return Some(NonNull::new(user_data).unwrap());
+        let mut chunk = unsafe { Chunk::from_user_data(user_data, layout, self.limit) };
+        if let Some(user_data) = unsafe {
+            chunk.get_user_data(Layout::from_size_align(new_size, layout.align()).unwrap())
+        } {
+            return Some(user_data);
         }
 
-        let mut chunk = unsafe { Chunk::from_user_data(user_data, layout, self.limit) };
         // println!("{chunk:?} {layout:?} -> {new_size}");
         if let (Some(user_data), remain) =
             unsafe { chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap()) }
@@ -622,8 +624,6 @@ impl Overlay {
     unsafe fn alloc_in_space(space: &mut impl Space, layout: Layout) -> *mut u8 {
         debug_assert_eq!(space.first(), Some(&0x82));
         let mut overlay = Self::new(space);
-        unsafe { overlay.sanity_check() }
-
         let user_data = match unsafe { overlay.alloc(layout) } {
             Ok(user_data) => user_data.as_ptr(),
             Err(mut top) => {
@@ -804,7 +804,9 @@ impl Overlay {
 
     unsafe fn sanity_check(&self) {
         let mut chunks = [None; 10];
+        println!("check:");
         for (i, chunk) in unsafe { self.iter_all_chunk() }.enumerate() {
+            println!("  {chunk:?}");
             chunks[i % 10] = Some(chunk);
             debug_assert!(unsafe { chunk.get_size() } >= Chunk::MIN_SIZE, "{chunks:?}",);
         }
@@ -991,7 +993,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod fuzz_tests {
+mod fuzz_failures {
     use crate::{
         fuzz::Method::{self, *},
         space::Fixed,
@@ -1000,7 +1002,7 @@ mod fuzz_tests {
     use super::*;
 
     #[test]
-    fn bug1() {
+    fn test1() {
         let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
         Method::run_fuzz(
             [
@@ -1018,7 +1020,7 @@ mod fuzz_tests {
     }
 
     #[test]
-    fn bug2() {
+    fn test2() {
         let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
         Method::run_fuzz(
             [
@@ -1031,6 +1033,28 @@ mod fuzz_tests {
                     index: 0,
                     new_size: 304,
                 },
+            ]
+            .into_iter(),
+            alloc,
+        );
+    }
+
+    #[test]
+    fn test3() {
+        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        Method::run_fuzz(
+            [
+                Alloc { size: 304 },
+                Realloc {
+                    index: 0,
+                    new_size: 1,
+                },
+                Realloc {
+                    index: 0,
+                    new_size: 48,
+                },
+                Alloc { size: 48 },
+                Dealloc { index: 1 },
             ]
             .into_iter(),
             alloc,
