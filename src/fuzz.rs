@@ -77,7 +77,7 @@ impl Method {
         let mut objects = Vec::new();
 
         for method in methods {
-            println!("{method:?},");
+            // println!("{method:?},");
             match method {
                 Self::Alloc { size } => {
                     // TODO

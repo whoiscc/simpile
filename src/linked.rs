@@ -351,7 +351,7 @@ impl Overlay {
         }
         let mut bin_chunk = bin_chunk.expect("top chunk always reachable from bins");
         // oldest first (really?)
-        while unsafe { bin_chunk.get_size() } <= chunk_size {
+        while unsafe { !bin_chunk.is_top() && bin_chunk.get_size() <= chunk_size } {
             bin_chunk = if let Some(next_chunk) = unsafe { bin_chunk.get_next() } {
                 next_chunk
             } else {
@@ -364,6 +364,7 @@ impl Overlay {
                 break;
             };
         }
+        // println!("{bin_chunk:?}");
         unsafe {
             chunk.set_next(Some(bin_chunk));
             chunk.set_prev(bin_chunk.get_prev());
@@ -529,19 +530,18 @@ impl Overlay {
         } else {
             unsafe { chunk.set_in_use(false) }
         }
+
         // println!("{chunk:?}");
         if let Some(free_higher) = unsafe { chunk.get_free_higher_chunk() } {
             if unsafe { !free_higher.is_top() } {
                 unsafe {
                     self.remove_chunk(free_higher);
                     chunk.coalesce(free_higher);
-                    self.add_chunk(chunk);
                 }
-            }
-            // otherwise do not coalesce with the top chunk so it remains minimum
-        } else {
-            unsafe { self.add_chunk(chunk) }
+            } // otherwise do not coalesce with the top chunk so it remains minimum
         }
+
+        unsafe { self.add_chunk(chunk) }
         // println!("{chunk:?}");
     }
 
@@ -559,25 +559,8 @@ impl Overlay {
         }
 
         // println!("{chunk:?} {layout:?} -> {new_size}");
-        if let (Some(user_data), remain) =
-            unsafe { chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap()) }
-        {
-            // debug_assert!(remain.is_none());
-            if let Some(remain) = remain {
-                unsafe { self.add_chunk(remain) }
-            }
-            return Some(user_data);
-        }
-
-        let free_higher;
-        unsafe {
-            chunk.set_in_use(false);
-            free_higher = chunk.get_free_higher_chunk();
-            chunk.set_in_use(true);
-        }
-
         // also falling back for the top chunk since it does not have higher chunk
-        let Some(free_higher) = free_higher else {
+        let Some(free_higher) = (unsafe { chunk.get_free_higher_chunk() }) else {
             return None;
         };
         if unsafe { free_higher.is_top() }
@@ -702,7 +685,7 @@ impl Overlay {
         } else {
             unsafe {
                 copy_nonoverlapping(user_data, new_user_data, layout.size());
-                overlay.dealloc(user_data, layout);
+                Self::dealloc_in_space(space, user_data, layout);
             }
             new_user_data
         }
@@ -804,9 +787,9 @@ impl Overlay {
 
     unsafe fn sanity_check(&self) {
         let mut chunks = [None; 10];
-        println!("check:");
+        // println!("check:");
         for (i, chunk) in unsafe { self.iter_all_chunk() }.enumerate() {
-            println!("  {chunk:?}");
+            // println!("  {chunk:?}");
             chunks[i % 10] = Some(chunk);
             debug_assert!(unsafe { chunk.get_size() } >= Chunk::MIN_SIZE, "{chunks:?}",);
         }
@@ -1055,6 +1038,28 @@ mod fuzz_failures {
                 },
                 Alloc { size: 48 },
                 Dealloc { index: 1 },
+            ]
+            .into_iter(),
+            alloc,
+        );
+    }
+
+    #[test]
+    fn test4() {
+        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        Method::run_fuzz(
+            [
+                Alloc { size: 1 },
+                Alloc { size: 1 },
+                Realloc {
+                    index: 0,
+                    new_size: 128,
+                },
+                Alloc { size: 1 },
+                Dealloc { index: 1 },
+                Alloc { size: 3072 },
+                Alloc { size: 1 },
+                Dealloc { index: 3 },
             ]
             .into_iter(),
             alloc,
