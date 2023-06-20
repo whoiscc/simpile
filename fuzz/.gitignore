@@ -1,2 +1,5 @@
-in
-out
+/target
+/Cargo.lock
+
+/in
+/out

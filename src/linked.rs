@@ -1,4 +1,7 @@
-#![cfg_attr(not(any(dev, test)), allow(clippy::unit_arg, clippy::unit_cmp))]
+#![cfg_attr(
+    not(any(dev, test, feature = "paranoid")),
+    allow(clippy::unit_arg, clippy::unit_cmp)
+)]
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -14,16 +17,18 @@ use std::{
 
 use crate::Space;
 
+#[cfg(any(dev, test, feature = "paranoid"))]
+type ChunkLimit = NonNull<u8>;
+#[cfg(not(any(dev, test, feature = "paranoid")))]
+type ChunkLimit = ();
+
 // invariants:
 // chunk.ptr < chunk.limit (to be exact, chunk.ptr + CHUNK::MIN_SIZE <= chunk.limit)
 // if chunk1 and chunk2 belong to the same heap, then chunk1.limit == chunk2.limit
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Chunk {
     data: NonNull<u8>,
-    #[cfg(any(dev, test))]
-    limit: NonNull<u8>,
-    #[cfg(not(any(dev, test)))]
-    limit: (),
+    limit: ChunkLimit,
 }
 
 impl Chunk {
@@ -36,12 +41,8 @@ impl Chunk {
     // 8 bytes prev, 8 bytes next, 8 bytes size
     const MIN_SIZE: usize = Self::META_SIZE + 24;
 
-    fn new(
-        data: NonNull<u8>,
-        #[cfg(any(dev, test))] limit: NonNull<u8>,
-        #[cfg(not(any(dev, test)))] limit: (),
-    ) -> Self {
-        #[cfg(any(dev, test))]
+    fn new(data: NonNull<u8>, limit: ChunkLimit) -> Self {
+        #[cfg(any(dev, test, feature = "paranoid"))]
         debug_assert!(data < limit, "expect {data:?} < {limit:?}");
         Self { data, limit }
     }
@@ -144,12 +145,7 @@ impl Chunk {
         }
     }
 
-    unsafe fn from_user_data(
-        user_data: *mut u8,
-        layout: Layout,
-        #[cfg(any(dev, test))] limit: NonNull<u8>,
-        #[cfg(not(any(dev, test)))] limit: (),
-    ) -> Self {
+    unsafe fn from_user_data(user_data: *mut u8, layout: Layout, limit: ChunkLimit) -> Self {
         let mut chunk = Self::new(
             NonNull::new(unsafe { user_data.offset(-8) }).unwrap(),
             limit,
@@ -283,10 +279,7 @@ impl Debug for Chunk {
 // the overlay over some `Space`
 struct Overlay {
     space: NonNull<u8>,
-    #[cfg(any(dev, test))]
-    limit: NonNull<u8>,
-    #[cfg(not(any(dev, test)))]
-    limit: (),
+    limit: ChunkLimit,
 }
 
 impl Overlay {
@@ -597,9 +590,9 @@ impl Overlay {
         let ptr_range = space.as_mut_ptr_range();
         Self {
             space: NonNull::new(ptr_range.start).unwrap(),
-            #[cfg(any(dev, test))]
+            #[cfg(any(dev, test, feature = "paranoid"))]
             limit: NonNull::new(ptr_range.end).unwrap(),
-            #[cfg(not(any(dev, test)))]
+            #[cfg(not(any(dev, test, feature = "paranoid")))]
             limit: (),
         }
     }
@@ -752,7 +745,7 @@ where
     }
 }
 
-#[cfg(any(test, dev))]
+#[cfg(any(test, dev, feature = "paranoid"))]
 impl Overlay {
     unsafe fn iter_all_chunk(&self) -> impl Iterator<Item = Chunk> {
         use std::iter::from_fn;
@@ -793,11 +786,12 @@ impl Overlay {
             chunks[i % 10] = Some(chunk);
             debug_assert!(unsafe { chunk.get_size() } >= Chunk::MIN_SIZE, "{chunks:?}",);
         }
+        for _chunk in unsafe { self.iter_free_chunk() } {}
         // TODO more check if needed
     }
 }
 
-#[cfg(not(any(test, dev)))]
+#[cfg(not(any(test, dev, feature = "paranoid")))]
 impl Overlay {
     unsafe fn sanity_check(&self) {}
 }

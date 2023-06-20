@@ -7,4 +7,4 @@ edition = "2021"
 
 [dependencies]
 afl = "0.13.1"
-simpile = { version = "0.1.0", path = ".." }
+simpile = { version = "0.1.0", path = "..", features = ["paranoid"] }
