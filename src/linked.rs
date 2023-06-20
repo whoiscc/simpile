@@ -52,15 +52,6 @@ impl Chunk {
         meta & (1 << Self::IN_USE_BIT) != 0
     }
 
-    unsafe fn set_in_use(&mut self, in_use: bool) {
-        let prev_in_use = unsafe { self.get_in_use() };
-        let meta = unsafe { self.data.cast::<u64>().as_mut() };
-        *meta = (*meta & !(1 << Self::IN_USE_BIT)) | ((in_use as u64) << Self::IN_USE_BIT);
-        if unsafe { prev_in_use || in_use || !self.is_top() } {
-            unsafe { self.get_higher_chunk().set_lower_in_use(in_use) }
-        }
-    }
-
     unsafe fn get_lower_in_use(&self) -> bool {
         let meta = unsafe { *self.data.cast::<u64>().as_ref() };
         meta & (1 << Self::LOWER_IN_USE_BIT) != 0
@@ -77,13 +68,20 @@ impl Chunk {
         (meta & !Self::META_MASK) as _
     }
 
-    unsafe fn set_size(&mut self, size: usize) {
-        let meta = unsafe { self.data.cast::<u64>().as_mut() };
-        debug_assert_eq!(size as u64 & Self::META_MASK, 0);
-        *meta = (*meta & Self::META_MASK) | (size as u64);
-        // not necessary for a chunk that is about to be allocated, hope not too expensive
+    unsafe fn set_in_use_and_size(&mut self, in_use: bool, size: usize) {
         debug_assert!(size >= Self::MIN_SIZE);
-        unsafe { *self.data.as_ptr().add(size - 8).cast::<u64>() = size as _ }
+        debug_assert_eq!(size as u64 & Self::META_MASK, 0);
+        let prev_in_use = unsafe { self.get_in_use() };
+        let meta = unsafe { self.data.cast::<u64>().as_mut() };
+        *meta = (*meta & !(1 << Self::IN_USE_BIT)) | ((in_use as u64) << Self::IN_USE_BIT);
+        *meta = (*meta & Self::META_MASK) | (size as u64);
+        if prev_in_use || in_use || unsafe { !self.is_top() } {
+            unsafe { self.get_higher_chunk().set_lower_in_use(in_use) }
+        }
+        if !in_use {
+            // not necessary for a chunk that is about to be allocated, hope not too expensive
+            unsafe { *self.data.as_ptr().add(size - 8).cast::<u64>() = size as _ }
+        }
     }
 
     unsafe fn get_prev(&self) -> Option<Self> {
@@ -191,12 +189,9 @@ impl Chunk {
         unsafe {
             debug_assert!(self.get_size() >= new_size);
             remain_size = self.get_size() - new_size;
-            self.set_size(new_size);
         }
 
-        // cannot just `get_higher_chunk` because we may be splitting the top chunk
         let remain = if remain_size < Self::MIN_SIZE {
-            unsafe { self.set_size(new_size + remain_size) }
             None
         } else {
             let mut remain = Self::new(
@@ -204,8 +199,8 @@ impl Chunk {
                 self.limit,
             );
             unsafe {
-                remain.set_in_use(false);
-                remain.set_size(remain_size);
+                remain.set_in_use_and_size(false, remain_size);
+                self.set_in_use_and_size(self.get_in_use(), new_size);
             }
             Some(remain)
         };
@@ -243,10 +238,7 @@ impl Chunk {
 
     unsafe fn coalesce(&mut self, chunk: Self) {
         debug_assert_eq!(unsafe { self.get_free_higher_chunk() }, Some(chunk));
-        unsafe {
-            self.set_size(self.get_size() + chunk.get_size());
-            self.set_in_use(self.get_in_use()) // update lower_in_use on higher chunk
-        }
+        unsafe { self.set_in_use_and_size(self.get_in_use(), self.get_size() + chunk.get_size()) }
     }
 }
 
@@ -430,13 +422,11 @@ impl Overlay {
                 .offset_from(chunk.data.as_ptr()) as usize
                 // save space for the top chunk
                 - Chunk::MIN_SIZE;
-            chunk.set_size(chunk_size);
-            chunk.set_in_use(false);
+            chunk.set_in_use_and_size(false, chunk_size);
             chunk.set_lower_in_use(true); // because there's no lower chunk
 
             let mut top_chunk = chunk.get_higher_chunk();
-            top_chunk.set_size(Chunk::MIN_SIZE);
-            top_chunk.set_in_use(false);
+            top_chunk.set_in_use_and_size(false, Chunk::MIN_SIZE);
             top_chunk.set_next(None);
             top_chunk.set_prev(None);
             self.set_bin_chunk(Self::bin_index_of_size(usize::MAX), Some(top_chunk));
@@ -497,7 +487,7 @@ impl Overlay {
         }
 
         // println!("{chunk:?}");
-        unsafe { chunk.set_in_use(true) }
+        unsafe { chunk.set_in_use_and_size(true, chunk.get_size()) }
 
         let user_data = user_data.unwrap();
         // a little duplication to `split`
@@ -516,12 +506,12 @@ impl Overlay {
         if let Some(mut free_lower) = unsafe { chunk.get_free_lower_chunk() } {
             unsafe {
                 self.remove_chunk(free_lower);
-                chunk.set_in_use(false);
+                chunk.set_in_use_and_size(false, chunk.get_size());
                 free_lower.coalesce(chunk);
                 chunk = free_lower;
             }
         } else {
-            unsafe { chunk.set_in_use(false) }
+            unsafe { chunk.set_in_use_and_size(false, chunk.get_size()) }
         }
 
         // println!("{chunk:?}");
@@ -572,7 +562,6 @@ impl Overlay {
             unsafe { chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap()) }
         {
             // println!("{chunk:?}");
-            unsafe { chunk.set_in_use(true) } // update low_in_use on the new higher chunk
             if let Some(remain) = remain {
                 unsafe { self.add_chunk(remain) }
             }
@@ -619,15 +608,14 @@ impl Overlay {
                         );
                         new_top.set_prev(None);
                         new_top.set_next(None);
-                        new_top.set_in_use(false);
-                        new_top.set_size(Chunk::MIN_SIZE);
+                        new_top.set_in_use_and_size(false, Chunk::MIN_SIZE);
                         overlay.update_top_chunk(top, new_top);
-                        top.set_size(new_size - size);
-                        top.set_in_use(false); // update lower_in_use on the new top chunk
+                        top.set_in_use_and_size(false, new_size - size);
                         if let Some(mut free_lower) = top.get_free_lower_chunk() {
                             // not coalescing because `top` looks like a top chunk
                             overlay.remove_chunk(free_lower);
-                            free_lower.set_size(free_lower.get_size() + top.get_size());
+                            free_lower
+                                .set_in_use_and_size(false, free_lower.get_size() + top.get_size());
                             overlay.add_chunk(free_lower);
                         } else {
                             overlay.add_chunk(top);
@@ -780,9 +768,9 @@ impl Overlay {
 
     unsafe fn sanity_check(&self) {
         let mut chunks = [None; 10];
-        // println!("check:");
+        println!("check:");
         for (i, chunk) in unsafe { self.iter_all_chunk() }.enumerate() {
-            // println!("  {chunk:?}");
+            println!("  {chunk:?}");
             chunks[i % 10] = Some(chunk);
             debug_assert!(unsafe { chunk.get_size() } >= Chunk::MIN_SIZE, "{chunks:?}",);
         }
@@ -1054,6 +1042,30 @@ mod fuzz_failures {
                 Alloc { size: 3072 },
                 Alloc { size: 1 },
                 Dealloc { index: 3 },
+            ]
+            .into_iter(),
+            alloc,
+        );
+    }
+
+    #[test]
+    fn test5() {
+        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        Method::run_fuzz(
+            [
+                Alloc { size: 1 },
+                Realloc {
+                    index: 0,
+                    new_size: 256,
+                },
+                Alloc { size: 304 },
+                Realloc {
+                    index: 0,
+                    new_size: 304,
+                },
+                Alloc { size: 233 },
+                Dealloc { index: 0 },
+                Alloc { size: 14 },
             ]
             .into_iter(),
             alloc,
