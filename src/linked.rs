@@ -560,7 +560,10 @@ impl Overlay {
         if let (Some(user_data), remain) =
             unsafe { chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap()) }
         {
-            debug_assert!(remain.is_none());
+            // debug_assert!(remain.is_none());
+            if let Some(remain) = remain {
+                unsafe { self.add_chunk(remain) }
+            }
             return Some(user_data);
         }
 
@@ -591,6 +594,7 @@ impl Overlay {
             unsafe { chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap()) }
         {
             // println!("{chunk:?}");
+            unsafe { chunk.set_in_use(true) } // update low_in_use on the new higher chunk
             if let Some(remain) = remain {
                 unsafe { self.add_chunk(remain) }
             }
@@ -988,6 +992,48 @@ mod tests {
 
 #[cfg(test)]
 mod fuzz_tests {
+    use crate::{
+        fuzz::Method::{self, *},
+        space::Fixed,
+    };
+
+    use super::*;
+
     #[test]
-    fn bug1() {}
+    fn bug1() {
+        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        Method::run_fuzz(
+            [
+                Alloc { size: 48 },
+                Realloc {
+                    index: 0,
+                    new_size: 304,
+                },
+                Alloc { size: 48 },
+                Dealloc { index: 1 },
+            ]
+            .into_iter(),
+            alloc,
+        );
+    }
+
+    #[test]
+    fn bug2() {
+        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        Method::run_fuzz(
+            [
+                Alloc { size: 2096 },
+                Realloc {
+                    index: 0,
+                    new_size: 48,
+                },
+                Realloc {
+                    index: 0,
+                    new_size: 304,
+                },
+            ]
+            .into_iter(),
+            alloc,
+        );
+    }
 }
