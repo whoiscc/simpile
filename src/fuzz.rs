@@ -82,13 +82,13 @@ impl Method {
         let mut objects = Vec::new();
 
         for method in methods {
-            println!("{method:?},");
+            // println!("{method:?},");
             match method {
                 Self::Alloc { size, align } => {
                     let Ok(layout) = Layout::from_size_align(size, align) else {
-                    continue;
-                };
-                    if layout.size() == 0 {
+                        continue;
+                    };
+                    if !(1..4 << 10).contains(&size) {
                         continue;
                     }
                     let ptr = unsafe { alloc.alloc(layout) };
@@ -105,9 +105,9 @@ impl Method {
                         match object {
                             Some((ptr, layout)) if !ptr.is_null() => {
                                 let Ok(new_layout) = Layout::from_size_align(new_size, layout.align()) else {
-                                continue;
-                            };
-                                if new_layout.size() == 0 {
+                                    continue;
+                                };
+                                if !(1..4 << 10).contains(&new_size) {
                                     continue;
                                 }
                                 let new_ptr = unsafe { alloc.realloc(*ptr, *layout, new_size) };
@@ -124,8 +124,9 @@ impl Method {
         }
 
         // Free any remaining allocations.
-        for mut object in objects {
+        for (_index, mut object) in objects.into_iter().enumerate() {
             if let Some((ptr, layout)) = object.take() {
+                // println!("{:?}", Self::Dealloc { index });
                 unsafe { alloc.dealloc(ptr, layout) }
             }
         }

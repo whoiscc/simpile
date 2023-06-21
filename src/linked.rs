@@ -784,9 +784,9 @@ impl Overlay {
 
     unsafe fn sanity_check(&self) {
         let mut chunks = [None; 10];
-        println!("check:");
+        // println!("check:");
         for (i, chunk) in unsafe { self.iter_all_chunk() }.enumerate() {
-            println!("  {chunk:?}");
+            // println!("  {chunk:?}");
             chunks[i % 10] = Some(chunk);
             debug_assert!(unsafe { chunk.get_size() } >= Chunk::MIN_SIZE, "{chunks:?}",);
         }
@@ -1113,5 +1113,22 @@ mod fuzz_failures {
             .into_iter(),
             alloc,
         );
+    }
+
+    #[test]
+    fn test6() {
+        let layout = Layout::from_size_align(4 << 10, 4 << 10).unwrap();
+        let data = unsafe { System.alloc(layout) };
+        let alloc = Allocator::new(Fixed::from(unsafe {
+            std::slice::from_raw_parts_mut(data, 4 << 10)
+        }));
+        Method::run_fuzz(
+            [
+           // ...
+        ]
+            .into_iter(),
+            alloc,
+        );
+        unsafe { System.dealloc(data, layout) }
     }
 }
