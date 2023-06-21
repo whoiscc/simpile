@@ -123,35 +123,29 @@ impl Drop for Mmap {
     }
 }
 
-pub struct Fixed(Box<[u8]>);
+pub struct Fixed<'a>(&'a mut [u8]);
 
-impl From<Box<[u8]>> for Fixed {
-    fn from(value: Box<[u8]>) -> Self {
+impl<'a> From<&'a mut [u8]> for Fixed<'a> {
+    fn from(value: &'a mut [u8]) -> Self {
         Self(value)
     }
 }
 
-impl From<Fixed> for Box<[u8]> {
-    fn from(value: Fixed) -> Self {
-        value.0
-    }
-}
-
-impl Deref for Fixed {
+impl Deref for Fixed<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        self.0
     }
 }
 
-impl DerefMut for Fixed {
+impl DerefMut for Fixed<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        self.0
     }
 }
 
-impl Space for Fixed {
+impl Space for Fixed<'_> {
     fn set_size(&mut self, bytes: usize) -> bool {
         bytes == self.0.len()
     }
@@ -174,7 +168,7 @@ mod tests {
             assert_eq!(&space[..source.len()], source);
         }
         run(&mut Mmap::new());
-        run(&mut Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        run(&mut Fixed::from(&mut *vec![0; 4 << 10]));
     }
 
     #[test]
@@ -185,15 +179,8 @@ mod tests {
         }
         run(&mut Mmap::new());
         let layout = Layout::from_size_align(4 << 10, 4 << 10).unwrap();
-        let mut space = Fixed::from(unsafe {
-            Box::<[_]>::from_raw(slice::from_raw_parts_mut(alloc(layout), 4 << 10))
-        });
+        let mut space = Fixed::from(unsafe { slice::from_raw_parts_mut(alloc(layout), 4 << 10) });
         run(&mut space);
-        unsafe {
-            dealloc(
-                Box::leak(Box::<[u8]>::from(space)).first_mut().unwrap(),
-                layout,
-            )
-        }
+        unsafe { dealloc(space.0.as_mut_ptr(), layout) }
     }
 }

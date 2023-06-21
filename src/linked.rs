@@ -185,11 +185,10 @@ impl Chunk {
             new_size += 8 - new_size % 8;
         }
         // println!("new size {new_size}");
-        let remain_size;
-        unsafe {
+        let remain_size = unsafe {
             debug_assert!(self.get_size() >= new_size);
-            remain_size = self.get_size() - new_size;
-        }
+            self.get_size() - new_size
+        };
 
         let remain = if remain_size < Self::MIN_SIZE {
             None
@@ -226,12 +225,12 @@ impl Chunk {
         )
     }
 
-    // not assert `self` is not top chunk because
+    // not check `self` is not top chunk because
     // 1. this method will be called by the previous top chunk, which still
     // "looks like" a top chunk when calling
     // 2. this method is only used by de/reallocation, and the (current) top chunk is never
     // allocated, so never get de/reallocated
-    // the assertion in `get_higher_chunk` make sure the "real" top chunk cannot call this
+    // the assertion in `Self::new` make sure the "real" top chunk cannot call this
     unsafe fn get_free_higher_chunk(&self) -> Option<Self> {
         unsafe { Some(self.get_higher_chunk()).filter(|chunk| !chunk.get_in_use()) }
     }
@@ -242,6 +241,7 @@ impl Chunk {
     }
 }
 
+// consider implement it as allocation-free?
 impl Debug for Chunk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut meta = Vec::new();
@@ -268,7 +268,7 @@ impl Debug for Chunk {
     }
 }
 
-// the overlay over some `Space`
+// the overlay over some `Space`, kind of holding an exclusive reference to it
 struct Overlay {
     space: NonNull<u8>,
     limit: ChunkLimit,
@@ -389,7 +389,7 @@ impl Overlay {
         }
     }
 
-    // sematic equal to `remove_chunk(top)` + `add_chunk(new_top)`
+    // semantic equal to `remove_chunk(top)` + `add_chunk(new_top)`
     unsafe fn update_top_chunk(&mut self, top: Chunk, mut new_top: Chunk) {
         // println!("update top {top:?} -> {new_top:?}");
         unsafe {
@@ -495,7 +495,7 @@ impl Overlay {
         let padding_size = unsafe { padding.offset_from(chunk.data.as_ptr()) } as usize;
         if padding_size != 0 {
             // println!("padding size {padding_size}");
-            debug_assert_eq!(padding_size as u64 & Chunk::META_MASK, 0); // which also clear meta bits
+            debug_assert_eq!(padding_size as u64 & Chunk::META_MASK, 0); // so the line below also clear meta bits
             unsafe { *padding.cast::<u64>() = padding_size as _ }
         }
         Ok(user_data)
@@ -547,6 +547,8 @@ impl Overlay {
             return None;
         };
         if unsafe { free_higher.is_top() }
+            // best effort shortcut to fallback
+            // it should be possible to "precisely" fallback if checking with `user_data` right?
             || unsafe { chunk.get_size() + free_higher.get_size() } < new_size + Chunk::META_SIZE
         {
             return None;
@@ -809,7 +811,8 @@ mod tests {
     #[test]
     fn single_free_chunk_on_init() {
         // leveraging the fact that System allocator always allocate 8 bytes aligned memory
-        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        let data = &mut *vec![0; 4 << 10];
+        let alloc = Allocator::new(Fixed::from(data));
         let all_chunk =
             Vec::from_iter(unsafe { Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk() });
         let free_chunk =
@@ -820,7 +823,8 @@ mod tests {
 
     #[test]
     fn working_debug_chunk() {
-        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        let data = &mut *vec![0; 4 << 10];
+        let alloc = Allocator::new(Fixed::from(data));
         assert!(format!(
             "{:?}",
             unsafe { Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk() }
@@ -833,7 +837,7 @@ mod tests {
     #[test]
     fn valid_addr() {
         fn run(sizes: impl Iterator<Item = usize>) {
-            let mut data = vec![0; 4 << 10].into_boxed_slice();
+            let data = &mut *vec![0; 4 << 10];
             let ptr_range = data.as_mut_ptr_range();
             let alloc = Allocator::new(Fixed::from(data));
             for size in sizes {
@@ -854,7 +858,8 @@ mod tests {
     #[test]
     fn aligned_addr() {
         fn run(sizes: impl Iterator<Item = usize>, align: usize) {
-            let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+            let data = &mut *vec![0; 4 << 10];
+            let alloc = Allocator::new(Fixed::from(data));
             for size in sizes {
                 let ptr = unsafe { alloc.alloc(Layout::from_size_align(size, align).unwrap()) };
                 if ptr.is_null() {
@@ -877,7 +882,8 @@ mod tests {
     #[test]
     fn alloc_dealloc_identical() {
         fn run(layouts: impl Iterator<Item = Layout> + Clone) {
-            let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+            let data = &mut *vec![0; 4 << 10];
+            let alloc = Allocator::new(Fixed::from(data));
             let chunks = Vec::from_iter(unsafe {
                 Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk()
             });
@@ -900,7 +906,8 @@ mod tests {
 
             // again but dealloc in LIFO order
             // yet to find a way to eliminate this duplication
-            let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+            let data = &mut *vec![0; 4 << 10];
+            let alloc = Allocator::new(Fixed::from(data));
             let chunks = Vec::from_iter(unsafe {
                 Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk()
             });
@@ -928,7 +935,8 @@ mod tests {
 
     #[test]
     fn realloc_in_place() {
-        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        let data = &mut *vec![0; 4 << 10];
+        let alloc = Allocator::new(Fixed::from(data));
         let mut layout = Layout::from_size_align(8, 1).unwrap();
         let ptr = unsafe { alloc.alloc(layout) };
         let new_ptr = unsafe { alloc.realloc(ptr, layout, 16) };
@@ -947,7 +955,8 @@ mod tests {
 
     #[test]
     fn realloc_copied() {
-        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        let data = &mut *vec![0; 4 << 10];
+        let alloc = Allocator::new(Fixed::from(data));
         let layout = Layout::from_size_align(8, 1).unwrap();
         let ptr = unsafe { alloc.alloc(layout) };
         unsafe { slice::from_raw_parts_mut(ptr, 8) }
@@ -982,7 +991,8 @@ mod fuzz_failures {
 
     #[test]
     fn test1() {
-        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        let data = &mut *vec![0; 4 << 10];
+        let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
                 Alloc { size: 48 },
@@ -1000,7 +1010,8 @@ mod fuzz_failures {
 
     #[test]
     fn test2() {
-        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        let data = &mut *vec![0; 4 << 10];
+        let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
                 Alloc { size: 2096 },
@@ -1020,7 +1031,8 @@ mod fuzz_failures {
 
     #[test]
     fn test3() {
-        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        let data = &mut *vec![0; 4 << 10];
+        let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
                 Alloc { size: 304 },
@@ -1042,7 +1054,8 @@ mod fuzz_failures {
 
     #[test]
     fn test4() {
-        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        let data = &mut *vec![0; 4 << 10];
+        let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
                 Alloc { size: 1 },
@@ -1064,7 +1077,8 @@ mod fuzz_failures {
 
     #[test]
     fn test5() {
-        let alloc = Allocator::new(Fixed::from(vec![0; 4 << 10].into_boxed_slice()));
+        let data = &mut *vec![0; 4 << 10];
+        let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
                 Alloc { size: 1 },
