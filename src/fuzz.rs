@@ -22,11 +22,12 @@ impl Method {
                 0 => {
                     let mut size = [0; N];
                     bytes.read_exact(&mut size)?;
-                    let mut log_align = [0; size_of::<u16>()];
+                    let mut log_align = [0; 1];
                     bytes.read_exact(&mut log_align)?;
                     methods.push(Self::Alloc {
                         size: usize::from_le_bytes(size),
-                        align: 1 << u16::from_le_bytes(log_align),
+                        // fuzz with align up to 2048 bytes, so a 4096 block can always allocate at least once
+                        align: 1 << (log_align[0] % 11),
                     });
                 }
                 1 => {
@@ -61,9 +62,7 @@ impl Method {
                 Self::Alloc { size, align } => {
                     bytes.write_all(&[0]).unwrap();
                     bytes.write_all(&size.to_le_bytes()).unwrap();
-                    bytes
-                        .write_all(&(align.trailing_zeros() as u16).to_le_bytes())
-                        .unwrap();
+                    bytes.write_all(&[align.trailing_zeros() as u8]).unwrap();
                 }
                 Self::Dealloc { index } => {
                     bytes.write_all(&[1]).unwrap();
