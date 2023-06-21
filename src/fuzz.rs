@@ -4,9 +4,9 @@ use std::{
     mem::size_of,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
-    Alloc { size: usize },
+    Alloc { size: usize, align: usize },
     Dealloc { index: usize },
     Realloc { index: usize, new_size: usize },
 }
@@ -22,8 +22,11 @@ impl Method {
                 0 => {
                     let mut size = [0; N];
                     bytes.read_exact(&mut size)?;
+                    let mut log_align = [0; size_of::<u16>()];
+                    bytes.read_exact(&mut log_align)?;
                     methods.push(Self::Alloc {
                         size: usize::from_le_bytes(size),
+                        align: 1 << u16::from_le_bytes(log_align),
                     });
                 }
                 1 => {
@@ -55,9 +58,12 @@ impl Method {
         let mut bytes = Vec::new();
         for method in methods {
             match method {
-                Self::Alloc { size } => {
+                Self::Alloc { size, align } => {
                     bytes.write_all(&[0]).unwrap();
                     bytes.write_all(&size.to_le_bytes()).unwrap();
+                    bytes
+                        .write_all(&(align.trailing_zeros() as u16).to_le_bytes())
+                        .unwrap();
                 }
                 Self::Dealloc { index } => {
                     bytes.write_all(&[1]).unwrap();
@@ -79,9 +85,8 @@ impl Method {
         for method in methods {
             println!("{method:?},");
             match method {
-                Self::Alloc { size } => {
-                    // TODO
-                    let Ok(layout) = Layout::from_size_align(size, 1) else {
+                Self::Alloc { size, align } => {
+                    let Ok(layout) = Layout::from_size_align(size, align) else {
                     continue;
                 };
                     if layout.size() == 0 {
@@ -125,5 +130,23 @@ impl Method {
                 unsafe { alloc.dealloc(ptr, layout) }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_serialization() {
+        let methods = vec![
+            Method::Alloc { size: 1, align: 1 },
+            Method::Realloc {
+                index: 0,
+                new_size: 2,
+            },
+            Method::Dealloc { index: 0 },
+        ];
+        assert_eq!(Method::from_bytes(&Method::to_bytes(&methods)), methods);
     }
 }

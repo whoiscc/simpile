@@ -995,12 +995,12 @@ mod fuzz_failures {
         let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
-                Alloc { size: 48 },
+                Alloc { size: 48, align: 1 },
                 Realloc {
                     index: 0,
                     new_size: 304,
                 },
-                Alloc { size: 48 },
+                Alloc { size: 48, align: 1 },
                 Dealloc { index: 1 },
             ]
             .into_iter(),
@@ -1014,7 +1014,10 @@ mod fuzz_failures {
         let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
-                Alloc { size: 2096 },
+                Alloc {
+                    size: 2096,
+                    align: 1,
+                },
                 Realloc {
                     index: 0,
                     new_size: 48,
@@ -1035,7 +1038,10 @@ mod fuzz_failures {
         let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
-                Alloc { size: 304 },
+                Alloc {
+                    size: 304,
+                    align: 1,
+                },
                 Realloc {
                     index: 0,
                     new_size: 1,
@@ -1044,7 +1050,7 @@ mod fuzz_failures {
                     index: 0,
                     new_size: 48,
                 },
-                Alloc { size: 48 },
+                Alloc { size: 48, align: 1 },
                 Dealloc { index: 1 },
             ]
             .into_iter(),
@@ -1058,16 +1064,19 @@ mod fuzz_failures {
         let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
-                Alloc { size: 1 },
-                Alloc { size: 1 },
+                Alloc { size: 1, align: 1 },
+                Alloc { size: 1, align: 1 },
                 Realloc {
                     index: 0,
                     new_size: 128,
                 },
-                Alloc { size: 1 },
+                Alloc { size: 1, align: 1 },
                 Dealloc { index: 1 },
-                Alloc { size: 3072 },
-                Alloc { size: 1 },
+                Alloc {
+                    size: 3072,
+                    align: 1,
+                },
+                Alloc { size: 1, align: 1 },
                 Dealloc { index: 3 },
             ]
             .into_iter(),
@@ -1081,19 +1090,25 @@ mod fuzz_failures {
         let alloc = Allocator::new(Fixed::from(data));
         Method::run_fuzz(
             [
-                Alloc { size: 1 },
+                Alloc { size: 1, align: 1 },
                 Realloc {
                     index: 0,
                     new_size: 256,
                 },
-                Alloc { size: 304 },
+                Alloc {
+                    size: 304,
+                    align: 1,
+                },
                 Realloc {
                     index: 0,
                     new_size: 304,
                 },
-                Alloc { size: 233 },
+                Alloc {
+                    size: 233,
+                    align: 1,
+                },
                 Dealloc { index: 0 },
-                Alloc { size: 14 },
+                Alloc { size: 14, align: 1 },
             ]
             .into_iter(),
             alloc,
