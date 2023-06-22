@@ -162,10 +162,8 @@ impl Chunk {
         chunk
     }
 
-    unsafe fn split(&mut self, layout: Layout) -> (Option<NonNull<u8>>, Option<Self>) {
-        let Some(user_data) = (unsafe { self.get_user_data(layout) }) else {
-            return (None, None);
-        };
+    unsafe fn split(&mut self, layout: Layout) -> Option<Self> {
+        let user_data = (unsafe { self.get_user_data(layout) }).unwrap();
         // println!("{user_data:?}");
 
         let padding_size = unsafe {
@@ -190,7 +188,7 @@ impl Chunk {
             self.get_size() - new_size
         };
 
-        let remain = if remain_size < Self::MIN_SIZE {
+        if remain_size < Self::MIN_SIZE {
             None
         } else {
             let mut remain = Self::new(
@@ -202,8 +200,7 @@ impl Chunk {
                 self.set_in_use_and_size(self.get_in_use(), new_size);
             }
             Some(remain)
-        };
-        (Some(user_data), remain)
+        }
     }
 
     unsafe fn get_free_lower_chunk(&self) -> Option<Self> {
@@ -478,9 +475,7 @@ impl Overlay {
             unsafe {
                 // println!("{chunk:?}");
                 self.remove_chunk(chunk);
-                // user data will be the same
-                let (_, remain) = chunk.split(layout);
-                if let Some(remain) = remain {
+                if let Some(remain) = chunk.split(layout) {
                     self.add_chunk(remain)
                 }
             }
@@ -535,9 +530,8 @@ impl Overlay {
         new_size: usize,
     ) -> Option<NonNull<u8>> {
         let mut chunk = unsafe { Chunk::from_user_data(user_data, layout, self.limit) };
-        if let Some(user_data) = unsafe {
-            chunk.get_user_data(Layout::from_size_align(new_size, layout.align()).unwrap())
-        } {
+        let new_layout = Layout::from_size_align(new_size, layout.align()).unwrap();
+        if let Some(user_data) = unsafe { chunk.get_user_data(new_layout) } {
             return Some(user_data);
         }
 
@@ -560,9 +554,8 @@ impl Overlay {
         }
         // println!("{chunk:?}");
 
-        if let (Some(user_data), remain) =
-            unsafe { chunk.split(Layout::from_size_align(new_size, layout.align()).unwrap()) }
-        {
+        if let Some(user_data) = unsafe { chunk.get_user_data(new_layout) } {
+            let remain = unsafe { chunk.split(new_layout) };
             // println!("{chunk:?}");
             if let Some(remain) = remain {
                 unsafe { self.add_chunk(remain) }
@@ -712,7 +705,7 @@ impl<S> Allocator<S> {
                 None => ENABLED.load(SeqCst) && !panicking(),
                 Some(ptr) => {
                     let mut space = self.acquire_space();
-                    !space.as_mut_ptr_range().contains(&ptr)
+                    space.as_mut_ptr_range().contains(&ptr)
                 }
             }
     }
