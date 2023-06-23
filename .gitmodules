@@ -1,0 +1,6 @@
+[submodule "rust"]
+	path = rust
+	url = https://github.com/whoiscc/rust-simplie
+[submodule "rustc-perf"]
+	path = rustc-perf
+	url = https://github.com/rust-lang/rustc-perf
