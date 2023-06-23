@@ -1117,7 +1117,7 @@ mod fuzz_failures {
         }));
         Method::run_fuzz(
             [
-           // ...
+           // ... fill here with any found aligned allocation bug
         ]
             .into_iter(),
             alloc,
