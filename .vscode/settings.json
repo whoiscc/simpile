@@ -1,5 +1,6 @@
 {
     "rust-analyzer.linkedProjects": [
-        "./fuzz/Cargo.toml"
-    ]
+        // "./fuzz/Cargo.toml"
+    ],
+    "rust-analyzer.check.features": ["std"]
 }

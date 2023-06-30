@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+std = ["nix"]
+switchtable = ["std"]
 paranoid = []
 
 [[bench]]
@@ -15,7 +17,8 @@ lto = true
 codegen-units = 1
 
 [dependencies]
-nix = "0.26.2"
+nix = { version = "0.26.2", optional = true }
+spin = "0.9.8"
 
 [dev-dependencies]
 criterion = "0.5.1"

@@ -3,17 +3,13 @@
     allow(clippy::unit_arg, clippy::unit_cmp)
 )]
 
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
+use core::{
+    alloc::{GlobalAlloc, Layout},
     fmt::Debug,
     ptr::{copy_nonoverlapping, null_mut, NonNull},
-    sync::{
-        atomic::{AtomicBool, Ordering::SeqCst},
-        Mutex, MutexGuard,
-        TryLockError::WouldBlock,
-    },
-    thread::panicking,
 };
+
+use spin::{Mutex, MutexGuard};
 
 use crate::Space;
 
@@ -240,28 +236,21 @@ impl Chunk {
 
 // consider implement it as allocation-free?
 impl Debug for Chunk {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut meta = Vec::new();
-        if unsafe { self.get_in_use() } {
-            meta.push(String::from("in_use"));
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut b = f.debug_tuple("Chunk");
+        let mut b = b
+            .field(&self.data.as_ptr())
+            .field(&unsafe { self.get_size() });
+        b = if unsafe { self.get_in_use() } {
+            b.field(&"in_use")
         } else {
-            meta.push(format!("prev = {:?}", unsafe {
-                self.get_prev().map(|chunk| chunk.data)
-            }));
-            meta.push(format!("next = {:?}", unsafe {
-                self.get_next().map(|chunk| chunk.data)
-            }));
-        }
+            b.field(&unsafe { self.get_prev().map(|chunk| chunk.data) })
+                .field(&unsafe { self.get_next().map(|chunk| chunk.data) })
+        };
         if unsafe { self.get_lower_in_use() } {
-            meta.push(String::from("lower_in_use"));
+            b = b.field(&"lower_in_use");
         }
-        write!(
-            f,
-            "Chunk({:?}, size = {}, {})",
-            self.data.as_ptr(),
-            unsafe { self.get_size() },
-            meta.join(", ")
-        )
+        b.finish()
     }
 }
 
@@ -681,10 +670,8 @@ impl<S> Allocator<S> {
 
     fn acquire_space(&self) -> MutexGuard<'_, S> {
         loop {
-            match self.0.try_lock() {
-                Ok(space) => break space,
-                Err(WouldBlock) => {}
-                _ => panic!(),
+            if let Some(space) = self.0.try_lock() {
+                break space;
             }
         }
     }
@@ -696,49 +683,66 @@ impl<S> Allocator<S> {
         unsafe { Overlay::new(&mut *self.acquire_space()).sanity_check() }
     }
 
-    fn enabled(&self, ptr: Option<*mut u8>) -> bool
-    where
-        S: Space,
-    {
-        cfg!(not(feature = "switchable"))
-            || match ptr {
-                None => ENABLED.load(SeqCst) && !panicking(),
-                Some(ptr) => {
-                    let mut space = self.acquire_space();
-                    space.as_mut_ptr_range().contains(&ptr)
-                }
-            }
-    }
+    // fn enabled(&self, ptr: Option<*mut u8>) -> bool
+    // where
+    //     S: Space,
+    // {
+    //     cfg!(not(feature = "switchable"))
+    //         || match ptr {
+    //             None => ENABLED.load(SeqCst) && !panicking(),
+    //             Some(ptr) => {
+    //                 let mut space = self.acquire_space();
+    //                 space.as_mut_ptr_range().contains(&ptr)
+    //             }
+    //         }
+    // }
 }
 
-static ENABLED: AtomicBool = AtomicBool::new(true);
+// static ENABLED: AtomicBool = AtomicBool::new(true);
+
+// unsafe impl<S> GlobalAlloc for Allocator<S>
+// where
+//     S: Space,
+// {
+//     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+//         if self.enabled(None) {
+//             unsafe { Overlay::alloc_in_space(&mut *self.acquire_space(), layout) }
+//         } else {
+//             unsafe { System.alloc(layout) }
+//         }
+//     }
+
+//     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+//         if self.enabled(Some(ptr)) {
+//             unsafe { Overlay::dealloc_in_space(&mut *self.acquire_space(), ptr, layout) }
+//         } else {
+//             unsafe { System.dealloc(ptr, layout) }
+//         }
+//     }
+
+//     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+//         if self.enabled(Some(ptr)) {
+//             unsafe { Overlay::realloc_in_space(&mut *self.acquire_space(), ptr, layout, new_size) }
+//         } else {
+//             unsafe { System.realloc(ptr, layout, new_size) }
+//         }
+//     }
+// }
 
 unsafe impl<S> GlobalAlloc for Allocator<S>
 where
     S: Space,
 {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if self.enabled(None) {
-            unsafe { Overlay::alloc_in_space(&mut *self.acquire_space(), layout) }
-        } else {
-            unsafe { System.alloc(layout) }
-        }
+        unsafe { Overlay::alloc_in_space(&mut *self.acquire_space(), layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if self.enabled(Some(ptr)) {
-            unsafe { Overlay::dealloc_in_space(&mut *self.acquire_space(), ptr, layout) }
-        } else {
-            unsafe { System.dealloc(ptr, layout) }
-        }
+        unsafe { Overlay::dealloc_in_space(&mut *self.acquire_space(), ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if self.enabled(Some(ptr)) {
-            unsafe { Overlay::realloc_in_space(&mut *self.acquire_space(), ptr, layout, new_size) }
-        } else {
-            unsafe { System.realloc(ptr, layout, new_size) }
-        }
+        unsafe { Overlay::realloc_in_space(&mut *self.acquire_space(), ptr, layout, new_size) }
     }
 }
 
@@ -795,9 +799,9 @@ impl Overlay {
 
 #[cfg(test)]
 mod tests {
-    use std::{iter::repeat, slice};
+    use std::{iter::repeat, slice, vec, vec::Vec};
 
-    use crate::space::{Fixed, Mmap};
+    use crate::space::Fixed;
 
     use super::*;
 
@@ -818,7 +822,7 @@ mod tests {
     fn working_debug_chunk() {
         let data = &mut *vec![0; 4 << 10];
         let alloc = Allocator::new(Fixed::from(data));
-        assert!(format!(
+        assert!(std::format!(
             "{:?}",
             unsafe { Overlay::new(&mut *alloc.acquire_space()).iter_all_chunk() }
                 .next()
@@ -962,19 +966,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grow() {
-        let mut space = Mmap::new();
-        space.set_size(1 << 10);
-        let alloc = Allocator::new(space);
-        for size in 1..100 {
-            unsafe { alloc.alloc(Layout::from_size_align(size, 1).unwrap()) };
-        }
-    }
+    // #[test]
+    // fn grow() {
+    //     let mut space = Mmap::new();
+    //     space.set_size(1 << 10);
+    //     let alloc = Allocator::new(space);
+    //     for size in 1..100 {
+    //         unsafe { alloc.alloc(Layout::from_size_align(size, 1).unwrap()) };
+    //     }
+    // }
 }
 
 #[cfg(test)]
 mod fuzz_failures {
+    use std::{alloc::System, vec};
+
     use crate::{
         fuzz::Method::{self, *},
         space::Fixed,
