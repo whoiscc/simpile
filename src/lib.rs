@@ -1,11 +1,14 @@
 #![no_std]
 #![warn(unsafe_op_in_unsafe_fn)]
 
-pub mod fuzz;
+
 pub mod linked;
 pub mod space;
 
+#[cfg(any(feature = "std", test))]
+pub mod fuzz;
+
 pub use space::Space;
 
-#[cfg(test)]
+#[cfg(any(feature = "std", test))]
 extern crate std;

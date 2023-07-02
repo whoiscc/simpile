@@ -22,3 +22,5 @@ spin = "0.9.8"
 
 [dev-dependencies]
 criterion = "0.5.1"
+dlmalloc = { version = "0.2.4", features = ["global"] }
+linked_list_allocator = "0.10.5"

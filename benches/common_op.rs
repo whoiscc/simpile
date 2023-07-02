@@ -1,6 +1,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use dlmalloc::GlobalDlmalloc;
+use linked_list_allocator::LockedHeap;
 use simpile::{linked::Allocator, space::Mmap, Space};
 
 fn run(c: &mut Criterion) {
@@ -17,6 +19,14 @@ fn run(c: &mut Criterion) {
     }
     let mut group = c.benchmark_group("One Alloc");
     group.bench_function("system", |b| b.iter(|| one_alloc(&System)));
+    group.bench_function("minimal", |b| {
+        let mut space = Mmap::new();
+        space.set_size(128 << 10);
+        let alloc = unsafe { LockedHeap::new(space.as_mut_ptr(), space.len()) };
+        b.iter(|| one_alloc(&alloc));
+        drop(space)
+    });
+    group.bench_function("dl", |b| b.iter(|| one_alloc(&GlobalDlmalloc)));
     group.bench_function("linked", |b| {
         let alloc = new_alloc();
         b.iter(|| one_alloc(&alloc))
@@ -31,6 +41,26 @@ fn run(c: &mut Criterion) {
         unsafe { System.dealloc(ptr, layout) }
         b.iter(|| one_alloc(&System));
         unsafe { System.dealloc(occupied_higher, layout) }
+    });
+    group.bench_function("minimal", |b| {
+        let mut space = Mmap::new();
+        space.set_size(128 << 10);
+        let alloc = unsafe { LockedHeap::new(space.as_mut_ptr(), space.len()) };
+        let layout = Layout::from_size_align(1, 1).unwrap();
+        let ptr = unsafe { alloc.alloc(layout) };
+        let occupied_higher = unsafe { alloc.alloc(layout) };
+        unsafe { alloc.dealloc(ptr, layout) }
+        b.iter(|| one_alloc(&alloc));
+        unsafe { alloc.dealloc(occupied_higher, layout) }
+        drop(space)
+    });
+    group.bench_function("dlmalloc", |b| {
+        let layout = Layout::from_size_align(1, 1).unwrap();
+        let ptr = unsafe { GlobalDlmalloc.alloc(layout) };
+        let occupied_higher = unsafe { GlobalDlmalloc.alloc(layout) };
+        unsafe { GlobalDlmalloc.dealloc(ptr, layout) }
+        b.iter(|| one_alloc(&System));
+        unsafe { GlobalDlmalloc.dealloc(occupied_higher, layout) }
     });
     group.bench_function("linked", |b| {
         let alloc = new_alloc();
@@ -57,6 +87,14 @@ fn run(c: &mut Criterion) {
     }
     let mut group = c.benchmark_group("1..100 Alloc");
     group.bench_function("system", |b| b.iter(|| hundred_alloc(&System, false)));
+    group.bench_function("minimal", |b| {
+        let mut space = Mmap::new();
+        space.set_size(128 << 10);
+        let alloc = unsafe { LockedHeap::new(space.as_mut_ptr(), space.len()) };
+        b.iter(|| hundred_alloc(&alloc, false));
+        drop(space)
+    });
+    group.bench_function("dl", |b| b.iter(|| hundred_alloc(&GlobalDlmalloc, false)));
     group.bench_function("linked", |b| {
         let alloc = new_alloc();
         b.iter(|| hundred_alloc(&alloc, false))
@@ -65,6 +103,14 @@ fn run(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("1..100 Alloc LIFO");
     group.bench_function("system", |b| b.iter(|| hundred_alloc(&System, true)));
+    group.bench_function("minimal", |b| {
+        let mut space = Mmap::new();
+        space.set_size(128 << 10);
+        let alloc = unsafe { LockedHeap::new(space.as_mut_ptr(), space.len()) };
+        b.iter(|| hundred_alloc(&alloc, true));
+        drop(alloc)
+    });
+    group.bench_function("dl", |b| b.iter(|| hundred_alloc(&GlobalDlmalloc, true)));
     group.bench_function("linked", |b| {
         let alloc = new_alloc();
         b.iter(|| hundred_alloc(&alloc, true))
@@ -93,6 +139,14 @@ fn run(c: &mut Criterion) {
     }
     let mut group = c.benchmark_group("100 (+8) Realloc");
     group.bench_function("system", |b| b.iter(|| hundred_realloc(&System, false)));
+    group.bench_function("minimal", |b| {
+        let mut space = Mmap::new();
+        space.set_size(128 << 10);
+        let alloc = unsafe { LockedHeap::new(space.as_mut_ptr(), space.len()) };
+        b.iter(|| hundred_realloc(&alloc, false));
+        drop(space)
+    });
+    group.bench_function("dl", |b| b.iter(|| hundred_realloc(&GlobalDlmalloc, false)));
     group.bench_function("linked", |b| {
         let alloc = new_alloc();
         b.iter(|| hundred_realloc(&alloc, false))
@@ -101,6 +155,14 @@ fn run(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("100 (+8) Realloc Copied");
     group.bench_function("system", |b| b.iter(|| hundred_realloc(&System, true)));
+    group.bench_function("minimal", |b| {
+        let mut space = Mmap::new();
+        space.set_size(128 << 10);
+        let alloc = unsafe { LockedHeap::new(space.as_mut_ptr(), space.len()) };
+        b.iter(|| hundred_realloc(&alloc, true));
+        drop(space)
+    });
+    group.bench_function("dl", |b| b.iter(|| hundred_realloc(&GlobalDlmalloc, true)));
     group.bench_function("linked", |b| {
         let alloc = new_alloc();
         b.iter(|| hundred_realloc(&alloc, true))
