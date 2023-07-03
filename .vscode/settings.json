@@ -2,5 +2,8 @@
     "rust-analyzer.linkedProjects": [
         // "./fuzz/Cargo.toml"
     ],
-    "rust-analyzer.check.features": ["std"]
+    "rust-analyzer.check.features": [
+        "std",
+        "switchable"
+    ]
 }

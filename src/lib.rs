@@ -5,10 +5,14 @@
 pub mod linked;
 pub mod space;
 
-#[cfg(any(feature = "std", test))]
-pub mod fuzz;
-
 pub use space::Space;
 
 #[cfg(any(feature = "std", test))]
+pub mod fuzz;
+#[cfg(feature = "switchable")]
+pub mod switchable;
+#[cfg(feature = "switchable")]
+pub use switchable::Switchable;
+
+#[cfg(any(feature = "std", feature = "switchable", test))]
 extern crate std;

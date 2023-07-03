@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 std = ["nix"]
-switchtable = ["std"]
+switchable = ["std"]
 paranoid = []
 
 [[bench]]

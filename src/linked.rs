@@ -668,7 +668,7 @@ impl<S> Allocator<S> {
         Self(Mutex::new(space))
     }
 
-    fn acquire_space(&self) -> MutexGuard<'_, S> {
+    pub(crate) fn acquire_space(&self) -> MutexGuard<'_, S> {
         loop {
             if let Some(space) = self.0.try_lock() {
                 break space;
@@ -682,52 +682,7 @@ impl<S> Allocator<S> {
     {
         unsafe { Overlay::new(&mut *self.acquire_space()).sanity_check() }
     }
-
-    // fn enabled(&self, ptr: Option<*mut u8>) -> bool
-    // where
-    //     S: Space,
-    // {
-    //     cfg!(not(feature = "switchable"))
-    //         || match ptr {
-    //             None => ENABLED.load(SeqCst) && !panicking(),
-    //             Some(ptr) => {
-    //                 let mut space = self.acquire_space();
-    //                 space.as_mut_ptr_range().contains(&ptr)
-    //             }
-    //         }
-    // }
 }
-
-// static ENABLED: AtomicBool = AtomicBool::new(true);
-
-// unsafe impl<S> GlobalAlloc for Allocator<S>
-// where
-//     S: Space,
-// {
-//     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-//         if self.enabled(None) {
-//             unsafe { Overlay::alloc_in_space(&mut *self.acquire_space(), layout) }
-//         } else {
-//             unsafe { System.alloc(layout) }
-//         }
-//     }
-
-//     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-//         if self.enabled(Some(ptr)) {
-//             unsafe { Overlay::dealloc_in_space(&mut *self.acquire_space(), ptr, layout) }
-//         } else {
-//             unsafe { System.dealloc(ptr, layout) }
-//         }
-//     }
-
-//     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-//         if self.enabled(Some(ptr)) {
-//             unsafe { Overlay::realloc_in_space(&mut *self.acquire_space(), ptr, layout, new_size) }
-//         } else {
-//             unsafe { System.realloc(ptr, layout, new_size) }
-//         }
-//     }
-// }
 
 unsafe impl<S> GlobalAlloc for Allocator<S>
 where
