@@ -2,6 +2,9 @@ use std::{alloc::GlobalAlloc, sync::OnceLock};
 
 use simpile::{linked::Allocator, space::Mmap, Space};
 
+#[cfg(not(feature = "std"))]
+compile_error!("feature \"std\" is required to compile");
+
 struct Global(OnceLock<Allocator<Mmap>>);
 
 impl Global {

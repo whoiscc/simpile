@@ -5,6 +5,9 @@ use dlmalloc::GlobalDlmalloc;
 use linked_list_allocator::LockedHeap;
 use simpile::{linked::Allocator, space::Mmap, Space};
 
+#[cfg(not(feature = "std"))]
+compile_error!("feature \"std\" is required to compile");
+
 fn run(c: &mut Criterion) {
     fn new_alloc() -> Allocator<Mmap> {
         let mut space = Mmap::new();

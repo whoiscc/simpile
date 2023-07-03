@@ -749,7 +749,7 @@ where
 #[cfg(any(test, dev, feature = "paranoid"))]
 impl Overlay {
     unsafe fn iter_all_chunk(&self) -> impl Iterator<Item = Chunk> {
-        use std::iter::from_fn;
+        use core::iter::from_fn;
 
         debug_assert_eq!(unsafe { self.space.as_ref() }, &0x82);
         let mut chunk = Some(unsafe { self.start_chunk() });
@@ -766,7 +766,7 @@ impl Overlay {
     }
 
     unsafe fn iter_free_chunk(&self) -> impl Iterator<Item = Chunk> {
-        use std::iter::from_fn;
+        use core::iter::from_fn;
 
         debug_assert_eq!(unsafe { self.space.as_ref() }, &0x82);
         let mut chunk = Some(unsafe { self.find_smallest(0) });
